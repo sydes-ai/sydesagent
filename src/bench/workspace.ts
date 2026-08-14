@@ -43,9 +43,13 @@ export async function prepareWorkspace(
   await mkdir(path.dirname(workspace), { recursive: true });
 
   if (!(await exists(mirrorDir))) {
+    // Deliberately not a partial clone. `--filter=blob:none` makes the mirror a promisor
+    // repo, and a workspace cloned *from* that mirror asks it for blobs it does not have,
+    // so every checkout fails with "unable to read sha1 file". The mirror is created once
+    // per repository and reused by every instance of it, so paying for it in full is cheap.
     const clone = await git(
       path.dirname(mirrorDir),
-      `git clone --bare --filter=blob:none ${repoUrl(instance)} ${JSON.stringify(mirrorDir)}`,
+      `git clone --bare ${repoUrl(instance)} ${JSON.stringify(mirrorDir)}`,
     );
     if (clone.exitCode !== 0) {
       throw new Error(`clone of ${repoUrl(instance)} failed: ${clone.stderr.trim().slice(0, 400)}`);

@@ -74,6 +74,8 @@ export async function loadDataset(
   filter: DatasetFilter = {},
 ): Promise<BenchInstance[]> {
   const out: BenchInstance[] = [];
+  let malformed = 0;
+
   for (const file of files) {
     const raw = await readFile(file, 'utf8');
     for (const line of raw.split('\n')) {
@@ -83,7 +85,11 @@ export async function loadDataset(
       try {
         instance = JSON.parse(trimmed) as BenchInstance;
       } catch {
-        throw new Error(`${file}: not valid JSONL near "${trimmed.slice(0, 80)}"`);
+        // These files run to hundreds of megabytes and a truncated download leaves one bad
+        // line. Refusing to start over a single unparseable record helps nobody; skip it and
+        // report the count so a corrupt file is still visible.
+        malformed++;
+        continue;
       }
       if (!instance.org || !instance.repo || instance.number === undefined) {
         throw new Error(`${file}: instance is missing org/repo/number`);
@@ -92,6 +98,9 @@ export async function loadDataset(
       out.push(instance);
       if (filter.limit && out.length >= filter.limit) return out;
     }
+  }
+  if (malformed) {
+    console.error(`[dataset] skipped ${malformed} unparseable line(s)`);
   }
   return out;
 }
