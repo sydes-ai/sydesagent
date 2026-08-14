@@ -204,6 +204,136 @@ describe('agent loop', () => {
   }, 120_000);
 });
 
+describe('correctness oracles', () => {
+  /** The failure we watched a live model produce: an edit calling a symbol that never existed. */
+  it('flags an invented symbol on the edit that introduces it', async () => {
+    const { result, llm } = await run([
+      {
+        toolCalls: [
+          {
+            name: 'edit_file',
+            arguments: {
+              path: 'service/pokemon.go',
+              old_string: 'if err := ValidatePokemon(p); err != nil {',
+              new_string: 'helpers.NormalizeName(p.Name)\n\tif err := ValidatePokemon(p); err != nil {',
+            },
+          },
+        ],
+      },
+      { toolCalls: [{ name: 'finish', arguments: { summary: 'done' } }] },
+    ]);
+
+    const editResult = toolResultAt(llm, 0);
+    expect(editResult).toContain('--- symbol check ---');
+    expect(editResult).toContain('helpers.NormalizeName');
+    expect(editResult).toContain('no such symbol in package "helpers"');
+
+    const flagged = result.trace.ofType('unknown_symbol');
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0].name).toBe('helpers.NormalizeName');
+  }, 120_000);
+
+  it('says nothing about a correct edit', async () => {
+    const { result, llm } = await run([
+      {
+        toolCalls: [
+          {
+            name: 'edit_file',
+            arguments: {
+              path: 'service/pokemon.go',
+              old_string: 'if p.Power > 1000 {',
+              new_string: 'if p.Power > 500 {',
+            },
+          },
+        ],
+      },
+      { toolCalls: [{ name: 'finish', arguments: { summary: 'done' } }] },
+    ]);
+
+    expect(toolResultAt(llm, 0)).not.toContain('--- symbol check ---');
+    expect(result.trace.ofType('unknown_symbol')).toHaveLength(0);
+  }, 120_000);
+
+  /** The compiler catches what the symbol checker cannot: bare value references. */
+  it('reports a build failure the symbol check cannot see', async () => {
+    const { result, llm } = await run([
+      {
+        toolCalls: [
+          {
+            name: 'edit_file',
+            arguments: {
+              path: 'service/pokemon.go',
+              old_string: 'if p.Power > 1000 {',
+              new_string: 'if p.Power > maxAllowedPower {',
+            },
+          },
+        ],
+      },
+      { toolCalls: [{ name: 'finish', arguments: { summary: 'done' } }] },
+    ]);
+
+    const editResult = toolResultAt(llm, 0);
+    expect(editResult).not.toContain('--- symbol check ---');
+    expect(editResult).toContain('--- build FAILED');
+    expect(editResult).toContain('undefined: maxAllowedPower');
+
+    const checks = result.trace.ofType('compile_check');
+    expect(checks).toHaveLength(1);
+    expect(checks[0].ok).toBe(false);
+    expect(checks[0].scoped).toBe(true);
+  }, 120_000);
+
+  /** Both arms get an oracle; the graph only narrows what it covers. */
+  it('compiles in the graph-off arm too, unscoped', async () => {
+    const { result, llm } = await run(
+      [
+        {
+          toolCalls: [
+            {
+              name: 'edit_file',
+              arguments: {
+                path: 'service/pokemon.go',
+                old_string: 'if p.Power > 1000 {',
+                new_string: 'if p.Power > maxAllowedPower {',
+              },
+            },
+          ],
+        },
+        { toolCalls: [{ name: 'finish', arguments: { summary: 'done' } }] },
+      ],
+      { graph: false },
+    );
+
+    expect(toolResultAt(llm, 0)).toContain('--- build FAILED');
+    const checks = result.trace.ofType('compile_check');
+    expect(checks).toHaveLength(1);
+    expect(checks[0].ok).toBe(false);
+  }, 120_000);
+
+  it('refuses to run tests on a build that does not compile', async () => {
+    const { llm } = await run([
+      {
+        toolCalls: [
+          {
+            name: 'edit_file',
+            arguments: {
+              path: 'service/pokemon.go',
+              old_string: 'if p.Power > 1000 {',
+              new_string: 'if p.Power > maxAllowedPower {',
+            },
+          },
+        ],
+      },
+      { toolCalls: [{ name: 'verify', arguments: {} }] },
+      { toolCalls: [{ name: 'finish', arguments: { summary: 'done' } }] },
+    ]);
+
+    const verifyResult = toolResultAt(llm, 1);
+    expect(verifyResult).toContain('BUILD FAILED');
+    expect(verifyResult).toContain('tests not run');
+  }, 180_000);
+});
+
 describe('graph-off baseline', () => {
   it('is a working agent with no graph tools, prompt or events', async () => {
     const { result, llm } = await run(

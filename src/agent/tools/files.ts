@@ -2,9 +2,57 @@ import { readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { hashContent } from '../../util/fs.js';
-import { enrichFailedRead, enrichPostEdit, enrichRead } from '../enrich.js';
+import type { UnknownSymbol } from '../../graph/validate.js';
+import { enrichFailedRead, enrichPostEdit, enrichRead, enrichSymbolCheck } from '../enrich.js';
+import { runCompile } from '../verify.js';
 import type { Tool, ToolContext, ToolResult } from './types.js';
 import { countLines, numberLines, resolveInRoot } from './util.js';
+
+/**
+ * Everything that runs after a file changes, in cost order: the graph re-index and the free
+ * symbol check first, then the compiler.
+ *
+ * The compiler runs in both arms - the graph's contribution is narrowing it to the packages
+ * the change actually reaches, which is what the experiment measures. When it fails the
+ * result is returned immediately and marked as an error, because a broken build is the most
+ * actionable feedback available and costs no model reasoning to produce.
+ */
+async function afterEdit(
+  ctx: ToolContext,
+  rel: string,
+  unknownsBefore: UnknownSymbol[],
+): Promise<string> {
+  await ctx.graph.noteEdit([rel]);
+
+  const symbols = enrichSymbolCheck(rel, unknownsBefore, ctx);
+  const impact = enrichPostEdit(ctx);
+
+  let compile = '';
+  if (ctx.config.compileAfterEdit) {
+    const result = await runCompile(
+      ctx.root,
+      ctx.ledger.editedFiles(),
+      ctx.graph,
+      ctx.exec,
+      ctx.config.compileTimeoutMs,
+    );
+    if (result) {
+      ctx.trace.emit({
+        type: 'compile_check',
+        turn: ctx.turn,
+        command: result.plan.command,
+        scoped: result.plan.scoped,
+        ok: result.ok,
+        ms: result.ms,
+      });
+      compile = result.ok
+        ? `\n\n--- build ok (${result.plan.command}, ${result.ms}ms) ---`
+        : `\n\n--- build FAILED (${result.plan.command}) ---\n${result.output}`;
+    }
+  }
+
+  return `${symbols}${impact}${compile}`;
+}
 
 function recordAccess(ctx: ToolContext, rel: string, kind: 'read' | 'edit'): void {
   const attribution = ctx.ledger.attribute(rel);
@@ -158,6 +206,8 @@ export const writeFileTool: Tool<{ path: string; content: string }> = {
     } catch {
       /* new file */
     }
+    // Snapshot before the write so only newly introduced unknowns are reported.
+    const unknownsBefore = ctx.graph.unknownSymbols(rel);
 
     await mkdir(path.dirname(abs), { recursive: true });
     await writeFile(abs, args.content);
@@ -180,9 +230,8 @@ export const writeFileTool: Tool<{ path: string; content: string }> = {
     });
     recordAccess(ctx, rel, 'edit');
 
-    await ctx.graph.noteEdit([rel]);
-    const impact = enrichPostEdit(ctx);
-    return { content: `Wrote ${rel} (${record.addedLines} lines).${impact}` };
+    const followUp = await afterEdit(ctx, rel, unknownsBefore);
+    return { content: `Wrote ${rel} (${record.addedLines} lines).${followUp}` };
   },
 };
 
@@ -229,6 +278,7 @@ export const editFileTool: Tool<{
       return { content: `File not found: ${rel}${recovery}`, isError: true };
     }
 
+    const unknownsBefore = ctx.graph.unknownSymbols(rel);
     const occurrences = content.split(args.old_string).length - 1;
     if (occurrences === 0) {
       return {
@@ -266,10 +316,9 @@ export const editFileTool: Tool<{
     });
     recordAccess(ctx, rel, 'edit');
 
-    await ctx.graph.noteEdit([rel]);
-    const impact = enrichPostEdit(ctx);
+    const followUp = await afterEdit(ctx, rel, unknownsBefore);
     return {
-      content: `Edited ${rel} (${occurrences} replacement${occurrences === 1 ? '' : 's'}).${impact}`,
+      content: `Edited ${rel} (${occurrences} replacement${occurrences === 1 ? '' : 's'}).${followUp}`,
     };
   },
 };

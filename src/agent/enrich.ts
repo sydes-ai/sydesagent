@@ -10,6 +10,7 @@
  */
 import { formatGroups } from '../graph/format.js';
 import type { Group } from '../graph/query.js';
+import { newUnknowns, type UnknownSymbol } from '../graph/validate.js';
 import type { ToolContext } from './tools/types.js';
 
 function trimToLines(text: string, maxLines: number): { text: string; truncated: number } {
@@ -136,6 +137,45 @@ export function enrichEmptySearch(term: string, ctx: ToolContext): string {
     suppressed: false,
   });
   return `\n${result.text}`;
+}
+
+/**
+ * E5 - identifiers this edit introduced that refer to nothing real.
+ *
+ * Decidable, microseconds, no model call. Snapshot the file's unknowns before the write and
+ * pass them in here, so a file's pre-existing noise is never reported and only what the edit
+ * introduced surfaces.
+ */
+export function enrichSymbolCheck(
+  relPath: string,
+  before: UnknownSymbol[],
+  ctx: ToolContext,
+): string {
+  if (!ctx.config.enrichment.symbolCheck || !ctx.graph.enabled) return '';
+
+  const unknowns = newUnknowns(before, ctx.graph.unknownSymbols(relPath));
+  if (!unknowns.length) return '';
+
+  for (const symbol of unknowns) {
+    ctx.trace.emit({
+      type: 'unknown_symbol',
+      turn: ctx.turn,
+      pathName: relPath,
+      name: symbol.qualifier ? `${symbol.qualifier}.${symbol.name}` : symbol.name,
+      reason: symbol.reason,
+      candidates: symbol.candidates.map((c) => `${c.file}:${c.startLine}`),
+    });
+  }
+
+  const body = `\n\n--- symbol check ---\n${ctx.graph.describeUnknowns(relPath, unknowns)}`;
+  ctx.trace.emit({
+    type: 'enrichment',
+    turn: ctx.turn,
+    kind: 'symbol_check',
+    bytes: body.length,
+    suppressed: false,
+  });
+  return body;
 }
 
 /** E4 - after an edit, what else the change reaches, and which tests cover it. */

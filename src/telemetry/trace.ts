@@ -18,7 +18,9 @@ export type TraceEvent =
   | { type: 'failed_read'; turn: number; pathName: string; recovered: boolean; candidates: string[] }
   | { type: 'edit'; turn: number; pathName: string; kind: 'write' | 'edit'; addedLines: number; removedLines: number }
   | { type: 'test_run'; turn: number; command: string; ok: boolean; ms: number }
-  | { type: 'enrichment'; turn: number; kind: 'read_footer' | 'failed_read' | 'empty_search' | 'post_edit'; bytes: number; suppressed: boolean }
+  | { type: 'enrichment'; turn: number; kind: 'read_footer' | 'failed_read' | 'empty_search' | 'post_edit' | 'symbol_check'; bytes: number; suppressed: boolean }
+  | { type: 'unknown_symbol'; turn: number; pathName: string; name: string; reason: string; candidates: string[] }
+  | { type: 'compile_check'; turn: number; command: string; scoped: boolean; ok: boolean; ms: number }
   | { type: 'run_end'; turn: number; reason: string; ms: number; editedFiles: string[] };
 
 export type PathSource = 'graph' | 'search' | 'model' | 'task';

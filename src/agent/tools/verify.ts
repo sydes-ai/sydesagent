@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { runVerification } from '../verify.js';
+import { runCompile, runVerification } from '../verify.js';
 import type { Tool, ToolResult } from './types.js';
 
 /**
@@ -14,6 +14,32 @@ export const verifyTool: Tool<Record<string, never>> = {
   schema: z.object({}).passthrough() as unknown as z.ZodType<Record<string, never>>,
 
   async run(_args, ctx): Promise<ToolResult> {
+    // Compile first: it is faster than the suite and says exactly which line is wrong.
+    // A build that does not compile cannot produce a meaningful test result.
+    const compiled = await runCompile(
+      ctx.root,
+      ctx.ledger.editedFiles(),
+      ctx.graph,
+      ctx.exec,
+      ctx.config.compileTimeoutMs,
+    );
+    if (compiled) {
+      ctx.trace.emit({
+        type: 'compile_check',
+        turn: ctx.turn,
+        command: compiled.plan.command,
+        scoped: compiled.plan.scoped,
+        ok: compiled.ok,
+        ms: compiled.ms,
+      });
+      if (!compiled.ok) {
+        return {
+          content: `$ ${compiled.plan.command}\n[BUILD FAILED in ${compiled.ms}ms — tests not run]\n${compiled.output}`,
+          isError: true,
+        };
+      }
+    }
+
     const result = await runVerification(
       ctx.root,
       ctx.ledger.editedFiles(),
@@ -38,6 +64,7 @@ export const verifyTool: Tool<Record<string, never>> = {
       ms: result.ms,
     });
 
+    const build = compiled ? `[build ok: ${compiled.plan.command}]\n` : '';
     const scope = result.plan.scoped
       ? `scoped: ${result.plan.reason}`
       : `unscoped: ${result.plan.reason}`;
@@ -46,7 +73,7 @@ export const verifyTool: Tool<Record<string, never>> = {
       : '';
 
     return {
-      content: `$ ${result.plan.command}\n[${scope}]${covering}\n[${result.ok ? 'PASS' : 'FAIL'} in ${result.ms}ms]\n${result.output}`,
+      content: `${build}$ ${result.plan.command}\n[${scope}]${covering}\n[${result.ok ? 'PASS' : 'FAIL'} in ${result.ms}ms]\n${result.output}`,
       isError: !result.ok,
     };
   },

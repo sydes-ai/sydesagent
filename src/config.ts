@@ -14,6 +14,8 @@ export const EnrichmentSchema = z.object({
   emptySearchHints: z.boolean().default(true),
   /** E4: summarise the change surface after an edit. */
   postEditImpact: z.boolean().default(true),
+  /** E5: flag identifiers an edit introduced that refer to nothing real. */
+  symbolCheck: z.boolean().default(true),
   /** Hard cap on footer size, in lines. */
   maxFooterLines: z.number().int().positive().default(12),
 });
@@ -41,6 +43,15 @@ export const AgentConfigSchema = z.object({
   maxGrepResults: z.number().int().positive().default(40),
   bashTimeoutMs: z.number().int().positive().default(120_000),
   allowBash: z.boolean().default(true),
+  /**
+   * Run the compiler or type checker after each edit.
+   *
+   * Catches contract breakage and invented symbols in seconds for zero model tokens, and is
+   * far more precise about where the problem is than a failing test. Runs in both arms; the
+   * graph only narrows which packages it covers.
+   */
+  compileAfterEdit: z.boolean().default(true),
+  compileTimeoutMs: z.number().int().positive().default(120_000),
   /**
    * How many times to correct a model that answers with prose instead of a tool call.
    * Smaller models do this often; without a nudge the run ends on turn one. Applied
@@ -77,6 +88,7 @@ export function withoutEnrichment(config: AgentConfig): AgentConfig {
       failedReadRecovery: false,
       emptySearchHints: false,
       postEditImpact: false,
+      symbolCheck: false,
     },
   };
 }

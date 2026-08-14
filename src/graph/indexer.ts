@@ -62,6 +62,7 @@ export async function indexFile(
       defs: extracted.defs,
       refs: extracted.refs,
       imports: extracted.imports,
+      locals: extracted.locals ?? [],
       contentHash: hashContent(content),
       lineCount: content.split('\n').length,
     };

@@ -6,6 +6,26 @@ export interface ExtractResult {
   defs: DefFact[];
   refs: RefFact[];
   imports: ImportFact[];
+  /** Locally bound names - see FileFacts.locals. */
+  locals?: string[];
+}
+
+/** Collects every `identifier` under a binding pattern (destructuring included). */
+export function bindingNames(node: Node | null, out: Set<string>): void {
+  if (!node) return;
+  const stack = [node];
+  while (stack.length) {
+    const current = stack.pop()!;
+    if (
+      current.type === 'identifier' ||
+      current.type === 'shorthand_property_identifier_pattern' ||
+      // Generic parameter names (`Tool<A>`) are type_identifiers, and are bindings too.
+      current.type === 'type_identifier'
+    ) {
+      out.add(current.text);
+    }
+    for (let i = 0; i < current.namedChildCount; i++) stack.push(current.namedChild(i)!);
+  }
 }
 
 export interface LanguageAdapter {

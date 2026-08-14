@@ -102,6 +102,12 @@ export interface RefFact {
   qualifierType?: string;
   line: number;
   kind: 'call' | 'reference';
+  /**
+   * True when the reference came through a selector/member expression (`x.foo()`).
+   * Without type inference the receiver of such a call is unknown, so the symbol validator
+   * must not judge it unless the qualifier is a package we actually index.
+   */
+  member?: boolean;
   /** Index into `FileFacts.defs` of the enclosing definition, if any. */
   enclosing?: number;
 }
@@ -138,6 +144,12 @@ export interface FileFacts {
   defs: DefFact[];
   refs: RefFact[];
   imports: ImportFact[];
+  /**
+   * Every name bound somewhere in this file: parameters, local variables, destructured
+   * bindings, loop variables. These are not graph nodes - they would flood it - but the
+   * symbol validator needs them, or it reports every local helper as an unknown symbol.
+   */
+  locals: string[];
   contentHash: string;
   lineCount: number;
 }

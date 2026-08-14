@@ -1,6 +1,6 @@
 import type { Node, Tree } from 'web-tree-sitter';
 import type { DefFact, ImportFact, Lang, RefFact } from '../model.js';
-import { lineOf, signatureOf, type ExtractResult, type LanguageAdapter } from './types.js';
+import { bindingNames, lineOf, signatureOf, type ExtractResult, type LanguageAdapter } from './types.js';
 
 const TEST_CALLEES = new Set(['describe', 'it', 'test', 'suite', 'context']);
 
@@ -20,6 +20,9 @@ const TS_BUILTINS = new Set([
   'expect', 'vi', 'jest', 'beforeAll', 'afterAll', 'beforeEach', 'afterEach', 'Partial', 'Record',
   'Readonly', 'Required', 'Pick', 'Omit', 'Exclude', 'Extract', 'ReturnType', 'Awaited', 'T', 'K',
   'V', 'U',
+  'Iterable', 'Iterator', 'AsyncIterable', 'AsyncIterator', 'Generator', 'AsyncGenerator',
+  'Function', 'Uint8Array', 'ArrayBuffer', 'ArrayBufferLike', 'NodeJS', 'Parameters',
+  'NonNullable', 'InstanceType', 'ThisType', 'Uppercase', 'Lowercase',
 ]);
 
 function unquote(text: string): string {
@@ -134,6 +137,7 @@ function makeAdapter(id: Lang, extensions: string[]): LanguageAdapter {
       const defs: DefFact[] = [];
       const refs: RefFact[] = [];
       const imports: ImportFact[] = [];
+      const locals = new Set<string>();
       const isTest = this.isTestFile(relPath);
 
       const addDef = (def: DefFact): number => {
@@ -285,7 +289,30 @@ function makeAdapter(id: Lang, extensions: string[]): LanguageAdapter {
             break;
           }
 
+          case 'type_parameter': {
+            bindingNames(node.childForFieldName('name') ?? node.namedChild(0), locals);
+            break;
+          }
+
+          case 'required_parameter':
+          case 'optional_parameter': {
+            // Binding positions: never graph nodes, but the symbol validator needs them.
+            bindingNames(node.childForFieldName('pattern'), locals);
+            break;
+          }
+
+          case 'catch_clause': {
+            bindingNames(node.childForFieldName('parameter'), locals);
+            break;
+          }
+
+          case 'for_in_statement': {
+            bindingNames(node.childForFieldName('left'), locals);
+            break;
+          }
+
           case 'variable_declarator': {
+            bindingNames(node.childForFieldName('name'), locals);
             // Only module-level bindings become nodes; locals would flood the graph.
             if (enclosing === undefined) {
               const nameNode = node.childForFieldName('name');
@@ -347,6 +374,7 @@ function makeAdapter(id: Lang, extensions: string[]): LanguageAdapter {
                   qualifierType,
                   line: lineOf(property),
                   kind: 'call',
+                  member: true,
                   enclosing,
                 });
               }
@@ -362,8 +390,18 @@ function makeAdapter(id: Lang, extensions: string[]): LanguageAdapter {
             break;
           }
 
+          case 'nested_type_identifier': {
+            const module = node.childForFieldName('module')?.text ?? node.namedChild(0)?.text;
+            const name = node.childForFieldName('name')?.text;
+            if (name) {
+              refs.push({ name, qualifier: module, line: lineOf(node), kind: 'reference', member: true, enclosing });
+            }
+            break;
+          }
+
           case 'type_identifier': {
-            if (!TS_BUILTINS.has(node.text)) {
+            // The nested_type_identifier case above owns `ns.Type`; do not double-count it.
+            if (node.parent?.type !== 'nested_type_identifier' && !TS_BUILTINS.has(node.text)) {
               refs.push({ name: node.text, line: lineOf(node), kind: 'reference', enclosing });
             }
             break;
@@ -390,7 +428,7 @@ function makeAdapter(id: Lang, extensions: string[]): LanguageAdapter {
         scope: new Map(),
         fields: new Map(),
       });
-      return { defs, refs, imports };
+      return { defs, refs, imports, locals: [...locals] };
     },
   };
 }

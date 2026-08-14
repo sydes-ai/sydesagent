@@ -64,6 +64,12 @@ export interface RunMetrics {
   edits: number;
   testRuns: number;
   testRunsPassed: number;
+  /** Compiler / type-checker runs: a correctness oracle that costs no model tokens. */
+  compileChecks: number;
+  compileFailures: number;
+  compileScoped: number;
+  /** Identifiers an edit introduced that referred to nothing real. */
+  unknownSymbolsFlagged: number;
   testFilesDiscovered: number;
   verified: boolean;
 
@@ -103,6 +109,8 @@ export function computeMetrics(trace: TraceLike, extra: { maxContextTokens?: num
   const repeats = pick(events, 'repeat_read');
   const failures = pick(events, 'failed_read');
   const edits = pick(events, 'edit');
+  const compiles = pick(events, 'compile_check');
+  const unknowns = pick(events, 'unknown_symbol');
   const surfaced = pick(events, 'suggestion_surfaced');
 
   const toolCallsByName: Record<string, number> = {};
@@ -196,6 +204,10 @@ export function computeMetrics(trace: TraceLike, extra: { maxContextTokens?: num
     edits: edits.length,
     testRuns: testRuns.length,
     testRunsPassed: testRuns.filter((t) => t.ok).length,
+    compileChecks: compiles.length,
+    compileFailures: compiles.filter((c) => !c.ok).length,
+    compileScoped: compiles.filter((c) => c.scoped).length,
+    unknownSymbolsFlagged: unknowns.length,
     testFilesDiscovered: testFiles.size,
     verified: testRuns.length > 0 && testRuns[testRuns.length - 1].ok,
 
@@ -236,6 +248,10 @@ const SUMMED_FIELDS = [
   'edits',
   'testRuns',
   'testRunsPassed',
+  'compileChecks',
+  'compileFailures',
+  'compileScoped',
+  'unknownSymbolsFlagged',
   'wallMs',
 ] as const;
 

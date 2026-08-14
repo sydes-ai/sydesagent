@@ -130,6 +130,32 @@ sydes report -a runs/bench/base -b runs/bench/graph -o runs/report.md
 For correctness rather than the local `verified` proxy, score both predictions files with the
 official harness (`sydes score`) and use its resolved counts.
 
+## Correctness oracles
+
+Two checks run after every edit and cost no model tokens, so they are reported separately from
+the exploration story:
+
+| Field | Meaning |
+| --- | --- |
+| `unknownSymbolsFlagged` | Identifiers an edit introduced that refer to nothing real |
+| `compileChecks` | Compiler / type-checker runs |
+| `compileFailures` | Of those, how many caught a broken build |
+| `compileScoped` | How many were narrowed by the graph rather than run project-wide |
+
+`compileFailures` is marked **higher-is-better**: a caught failure is a bug that never reached
+the test suite or the patch. The gate for this layer is hallucinated-symbol edits going to
+zero and the invalid-patch rate falling, not exploration.
+
+The compiler runs in both arms — the graph only changes *what it covers*, so `compileScoped`
+is the graph's contribution and is measured as such. The symbol check is graph-only by
+construction, since it needs the symbol table; that asymmetry is the hypothesis, not a
+confound, and it is recorded explicitly.
+
+**False positives are the whole design risk here.** The symbol check is validated against a
+zero-false-positive bar on real code (91 files of Go and TypeScript in-repo). If that bar ever
+breaks, the check should be disabled (`enrichment.symbolCheck`) rather than tolerated — a
+checker the model learns to ignore is worse than none.
+
 ## Ablations
 
 Individual enrichment middlewares can be switched off (`--no-enrichment`, or the

@@ -10,6 +10,7 @@ import { indexRepo, reindexFiles } from './indexer.js';
 import type { GraphNode } from './model.js';
 import { GraphQuery, type Group } from './query.js';
 import type { GraphStats, GraphStore } from './store.js';
+import { formatUnknowns, unknownSymbols, type UnknownSymbol } from './validate.js';
 
 export interface GraphResult {
   /** Rendered, navigational text ready to hand to the model. */
@@ -38,6 +39,13 @@ export interface GraphProvider {
   impact(changedFiles: string[]): GraphResult & { testFiles: string[] };
   pathCandidates(badPath: string): GraphResult;
   symbolCandidates(term: string): GraphResult;
+  /**
+   * Identifiers in a file that refer to nothing real. Callers snapshot before an edit and
+   * compare after, so only newly introduced unknowns are reported.
+   */
+  unknownSymbols(file: string): UnknownSymbol[];
+  /** Renders unknowns with "did you mean" pointers at real code. */
+  describeUnknowns(file: string, unknowns: UnknownSymbol[]): string;
   /** Incremental re-index after the agent edits files. */
   noteEdit(files: string[]): Promise<void>;
 }
@@ -238,6 +246,17 @@ export class LocalGraphProvider implements GraphProvider {
     return { ...value, ms };
   }
 
+  unknownSymbols(file: string): UnknownSymbol[] {
+    if (!this.store) return [];
+    return unknownSymbols(this.store, this.normalize(file));
+  }
+
+  describeUnknowns(file: string, unknowns: UnknownSymbol[]): string {
+    return formatUnknowns(this.normalize(file), unknowns, {
+      suggest: (name) => this.q().findSymbol(name).slice(0, 3),
+    });
+  }
+
   async noteEdit(files: string[]): Promise<void> {
     if (!this.store) return;
     await reindexFiles(this.store, files.map((f) => this.normalize(f)));
@@ -275,6 +294,12 @@ export class NullGraphProvider implements GraphProvider {
   }
   symbolCandidates(): GraphResult {
     return this.empty();
+  }
+  unknownSymbols(): UnknownSymbol[] {
+    return [];
+  }
+  describeUnknowns(): string {
+    return '';
   }
   async noteEdit(): Promise<void> {}
 }

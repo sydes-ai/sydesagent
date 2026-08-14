@@ -1,6 +1,6 @@
 import type { Node, Tree } from 'web-tree-sitter';
 import type { DefFact, ImportFact, RefFact } from '../model.js';
-import { lineOf, signatureOf, type ExtractResult, type LanguageAdapter } from './types.js';
+import { bindingNames, lineOf, signatureOf, type ExtractResult, type LanguageAdapter } from './types.js';
 
 /**
  * Builtins never resolve to a repo symbol. Filtering them at extraction keeps the
@@ -47,6 +47,7 @@ export const goAdapter: LanguageAdapter = {
     const defs: DefFact[] = [];
     const refs: RefFact[] = [];
     const imports: ImportFact[] = [];
+    const locals = new Set<string>();
     let pkg: string | undefined;
     const isTest = relPath.endsWith('_test.go');
 
@@ -129,8 +130,23 @@ export const goAdapter: LanguageAdapter = {
           break;
         }
 
+        // Binding positions. These never become graph nodes, but the symbol validator
+        // needs them so a local helper is not mistaken for a hallucinated symbol.
+        case 'short_var_declaration':
+        case 'range_clause': {
+          bindingNames(node.childForFieldName('left'), locals);
+          break;
+        }
+
+        case 'parameter_declaration':
+        case 'variadic_parameter_declaration': {
+          bindingNames(node.childForFieldName('name'), locals);
+          break;
+        }
+
         case 'const_spec':
         case 'var_spec': {
+          bindingNames(node.childForFieldName('name'), locals);
           // Package-level only; locals live inside a function and would flood the graph.
           if (enclosing === undefined) {
             const nameNode = node.childForFieldName('name');
@@ -165,6 +181,7 @@ export const goAdapter: LanguageAdapter = {
                 qualifier: operand?.type === 'identifier' ? operand.text : undefined,
                 line: lineOf(field),
                 kind: 'call',
+                member: true,
                 enclosing,
               });
             }
@@ -197,6 +214,6 @@ export const goAdapter: LanguageAdapter = {
     };
 
     walk(tree.rootNode, undefined);
-    return { pkg, defs, refs, imports };
+    return { pkg, defs, refs, imports, locals: [...locals] };
   },
 };

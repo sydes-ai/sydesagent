@@ -89,9 +89,41 @@ no extra model turn because they ride along with a tool result the model already
 | Successful read | The file's structural neighborhood, deduped against what was already shown |
 | Failed read (`ENOENT`) | Existing nearby files — `server/handler/pokemon.go` → `pkg/handler/pokedex.go` |
 | Search with no hits | Similar symbols from the graph |
-| Edit | The change surface: callers, implementations, covering tests |
+| Edit | The change surface: callers, implementations, covering tests — plus a symbol check and a compile |
 
 Each is individually toggleable, because each is a claim that has to survive measurement.
+
+## Two correctness oracles that cost no tokens
+
+Most of what an agent gets wrong is expensive to detect. Two failure modes are not.
+
+**Invented symbols are decidable.** The graph knows every symbol in the repository, so an edit
+that calls a function which does not exist is caught in microseconds:
+
+```
+--- symbol check ---
+This edit references 1 symbol(s) that do not exist:
+  service/pokemon.go:34  helpers.NormalizeName — no such symbol in package "helpers"
+      did you mean NormalizeQuery → helpers/text.go:12
+```
+
+We watched a live model "change `maxAllowedPokemonPower` from 1000 to 500" and report success
+against a symbol that never existed. This turns that silent wrong answer into a correction.
+
+The whole design problem is false positives — a checker that cries wolf gets ignored. Four
+things keep it quiet: locally bound names are skipped; names from unresolvable (external)
+imports are skipped; method calls on values whose type we do not infer are never judged; and
+callers compare against a pre-edit snapshot, so only what the edit *introduced* is reported.
+Measured across 91 real files of Go and TypeScript, it reports **zero** false positives.
+
+**The compiler catches what the graph cannot.** A hallucinated bare value (`maxAllowedPower`)
+is not a call, so the symbol checker says nothing — and `go build` says
+`undefined: maxAllowedPower` in under a second. Both run after every edit, and `verify` builds
+before it tests, because a build that does not compile cannot produce a meaningful test result.
+
+The compiler runs in **both** arms. The graph's contribution is scope: it knows which packages
+the change reaches, so the check covers the callers too rather than just the edited package.
+That difference is what the experiment measures.
 
 ## The ledger
 
@@ -201,11 +233,11 @@ fixtures/       small Go and TS repos used as golden graphs and agent workspaces
 
 ## Status
 
-Working: the graph, the agent loop and its tools, all four enrichments, the ledger, the
+Working: the graph, the agent loop and its tools, all five enrichments, the ledger, the
 telemetry and A/B report, cost and cache accounting, prompt caching, the token-free graph
-benchmark, verification, the Multi-SWE-bench runner and the harness wrapper. 65 tests cover
-them, including a benchmark instance and a graph evaluation that both run end-to-end offline
-against a local git mirror.
+benchmark, the symbol and compiler oracles, verification, the Multi-SWE-bench runner and the
+harness wrapper. 86 tests cover them, including a benchmark instance and a graph evaluation
+that both run end-to-end offline against a local git mirror.
 
 Not yet done: the experiment itself. It needs a model strong enough to use tools well — the
 local `llama3.1:8b` smoke run exercises the plumbing but is not evidence either way. Java, Rust
