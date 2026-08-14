@@ -152,6 +152,56 @@ describe('agent loop', () => {
     expect(body).toContain('Related tests');
   });
 
+  /**
+   * Real models pass a defensive whole-file range (`start_line: 1, end_line: 400` for a
+   * 48-line file) rather than omitting the arguments. Treating that as "wants a slice"
+   * silently disabled the structural footer and repeat-read dedup in every live run, while
+   * every test — which omitted the range — kept passing.
+   */
+  it('treats a range covering the whole file as a full read', async () => {
+    const { result, llm } = await run([
+      {
+        toolCalls: [
+          {
+            name: 'read_file',
+            arguments: { path: 'pkg/handler/pokedex.go', start_line: 1, end_line: 400 },
+          },
+        ],
+      },
+      {
+        toolCalls: [
+          {
+            name: 'read_file',
+            arguments: { path: 'pkg/handler/pokedex.go', start_line: 1, end_line: 400 },
+          },
+        ],
+      },
+      { toolCalls: [{ name: 'finish', arguments: { summary: 'done' } }] },
+    ]);
+
+    // The footer fires, exactly as it would for an argument-free read.
+    expect(toolResultAt(llm, 0)).toContain('--- structure (from the code graph');
+    // And the second identical read is still deduplicated.
+    expect(toolResultAt(llm, 1)).toContain('unchanged since you read it');
+    expect(result.trace.ofType('graph_lookup').some((l) => l.kind === 'expand:auto')).toBe(true);
+  });
+
+  it('still treats a genuine slice as a slice', async () => {
+    const { result, llm } = await run([
+      {
+        toolCalls: [
+          { name: 'read_file', arguments: { path: 'helpers/helpers.go', start_line: 20, end_line: 30 } },
+        ],
+      },
+      { toolCalls: [{ name: 'finish', arguments: { summary: 'done' } }] },
+    ]);
+
+    const body = toolResultAt(llm, 0);
+    expect(body).toContain('lines 20-30 of');
+    expect(body).not.toContain('--- structure (from the code graph');
+    expect(result.trace.ofType('graph_lookup').some((l) => l.kind === 'expand:auto')).toBe(false);
+  });
+
   it('does not repeat structural facts it has already shown', async () => {
     const { llm } = await run([
       { toolCalls: [{ name: 'graph_expand', arguments: { anchor: 'pkg/handler/pokedex.go' } }] },

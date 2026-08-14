@@ -114,11 +114,24 @@ export const readFileTool: Tool<{ path: string; start_line?: number; end_line?: 
       };
     }
 
+    const lines = content.split('\n');
+    const start = Math.max(1, args.start_line ?? 1);
+    const end = Math.min(lines.length, args.end_line ?? start + ctx.config.maxReadLines - 1);
+
+    /**
+     * Whether this read covers the file, not whether the model named a range.
+     *
+     * Models routinely pass a defensive `start_line: 1, end_line: 400` for a 48-line file.
+     * Treating any explicit range as "wants a slice" silently disabled both the structural
+     * footer and repeat-read deduplication for every real run — the graph arm looked like it
+     * was working while its main mechanism never fired.
+     */
+    const coversWholeFile = start <= 1 && end >= lines.length;
+
     const hash = hashContent(content);
     const isRepeat = ctx.ledger.hasFreshRead(rel, hash);
-    const wantsSlice = args.start_line !== undefined || args.end_line !== undefined;
 
-    if (isRepeat && !wantsSlice) {
+    if (isRepeat && coversWholeFile) {
       const record = ctx.ledger.noteRead(rel, hash, countLines(content), ctx.turn);
       ctx.trace.emit({
         type: 'repeat_read',
@@ -136,9 +149,6 @@ export const readFileTool: Tool<{ path: string; start_line?: number; end_line?: 
       };
     }
 
-    const lines = content.split('\n');
-    const start = Math.max(1, args.start_line ?? 1);
-    const end = Math.min(lines.length, args.end_line ?? start + ctx.config.maxReadLines - 1);
     const slice = lines.slice(start - 1, end);
     const truncated = end < lines.length || start > 1;
 
@@ -149,7 +159,7 @@ export const readFileTool: Tool<{ path: string; start_line?: number; end_line?: 
     // of tokens *and* hides most of the file. An outline is strictly better on both counts:
     // fewer tokens, and it shows what is actually there. Only substitutes where the read was
     // going to be truncated anyway, so nothing complete is ever withheld.
-    if (!wantsSlice && lines.length > ctx.config.maxReadLines) {
+    if (coversWholeFile && lines.length > ctx.config.maxReadLines) {
       const outline = ctx.graph.outline(rel);
       if (outline) {
         ctx.ledger.expansions.add(rel);
@@ -166,7 +176,7 @@ export const readFileTool: Tool<{ path: string; start_line?: number; end_line?: 
     const header = truncated
       ? `${rel} (lines ${start}-${end} of ${lines.length})`
       : `${rel} (${lines.length} lines)`;
-    const footer = wantsSlice ? '' : enrichRead(rel, ctx);
+    const footer = coversWholeFile ? enrichRead(rel, ctx) : '';
 
     return { content: `${header}\n${numberLines(slice.join('\n'), start)}${footer}` };
   },
