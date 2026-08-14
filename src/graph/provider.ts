@@ -10,6 +10,7 @@ import { indexRepo, reindexFiles } from './indexer.js';
 import type { GraphNode } from './model.js';
 import { GraphQuery, type Group } from './query.js';
 import type { GraphStats, GraphStore } from './store.js';
+import { envelopeFor, fileOutline, type EnvelopeParts } from './outline.js';
 import { formatUnknowns, unknownSymbols, type UnknownSymbol } from './validate.js';
 
 export interface GraphResult {
@@ -39,6 +40,10 @@ export interface GraphProvider {
   impact(changedFiles: string[]): GraphResult & { testFiles: string[] };
   pathCandidates(badPath: string): GraphResult;
   symbolCandidates(term: string): GraphResult;
+  /** A file's shape without its bodies - the substitutive use of the graph. */
+  outline(file: string): string;
+  /** Contract boundary around one symbol: skeleton plus one-hop signatures. */
+  envelope(anchor: string): EnvelopeParts | undefined;
   /**
    * Identifiers in a file that refer to nothing real. Callers snapshot before an edit and
    * compare after, so only newly introduced unknowns are reported.
@@ -246,6 +251,14 @@ export class LocalGraphProvider implements GraphProvider {
     return { ...value, ms };
   }
 
+  outline(file: string): string {
+    return this.store ? fileOutline(this.store, this.normalize(file)) : '';
+  }
+
+  envelope(anchor: string): EnvelopeParts | undefined {
+    return this.store ? envelopeFor(this.store, this.normalize(anchor)) : undefined;
+  }
+
   unknownSymbols(file: string): UnknownSymbol[] {
     if (!this.store) return [];
     return unknownSymbols(this.store, this.normalize(file));
@@ -294,6 +307,12 @@ export class NullGraphProvider implements GraphProvider {
   }
   symbolCandidates(): GraphResult {
     return this.empty();
+  }
+  outline(): string {
+    return '';
+  }
+  envelope(): EnvelopeParts | undefined {
+    return undefined;
   }
   unknownSymbols(): UnknownSymbol[] {
     return [];

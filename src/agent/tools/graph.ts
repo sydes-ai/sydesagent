@@ -9,6 +9,7 @@
  */
 import { z } from 'zod';
 import type { GraphResult } from '../../graph/provider.js';
+import { readSymbolTool } from './symbol.js';
 import type { Tool, ToolContext, ToolResult } from './types.js';
 
 function report(ctx: ToolContext, kind: string, anchor: string, result: GraphResult): ToolResult {
@@ -188,6 +189,7 @@ export const graphCompactTool: Tool<{ relation: string; anchor?: string }> = {
 };
 
 export const GRAPH_TOOLS = [
+  readSymbolTool,
   graphExpandTool,
   graphFindTool,
   graphCallersTool,
@@ -196,4 +198,4 @@ export const GRAPH_TOOLS = [
   graphImpactTool,
 ];
 
-export const GRAPH_TOOLS_COMPACT = [graphCompactTool];
+export const GRAPH_TOOLS_COMPACT = [readSymbolTool, graphCompactTool];

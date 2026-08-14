@@ -48,7 +48,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   const runId = options.runId ?? randomUUID().slice(0, 8);
   const trace = new Trace(runId);
   const ledger = new Ledger();
-  const context = new ContextManager(config.contextTrimCeiling);
+  const context = new ContextManager(config.contextTrimCeiling, (file) => graph.outline(file));
   const started = Date.now();
 
   const files = await walkRepo(root);

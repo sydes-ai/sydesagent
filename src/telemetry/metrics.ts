@@ -70,6 +70,10 @@ export interface RunMetrics {
   compileScoped: number;
   /** Identifiers an edit introduced that referred to nothing real. */
   unknownSymbolsFlagged: number;
+  /** Reads answered with a file outline instead of an arbitrary truncation. */
+  outlineReads: number;
+  /** Change envelopes: one retrieval carrying what several file reads would. */
+  envelopeReads: number;
   testFilesDiscovered: number;
   verified: boolean;
 
@@ -208,6 +212,8 @@ export function computeMetrics(trace: TraceLike, extra: { maxContextTokens?: num
     compileFailures: compiles.filter((c) => !c.ok).length,
     compileScoped: compiles.filter((c) => c.scoped).length,
     unknownSymbolsFlagged: unknowns.length,
+    outlineReads: toolCalls.filter((c) => c.note === 'outline').length,
+    envelopeReads: lookups.filter((l) => l.kind === 'envelope').length,
     testFilesDiscovered: testFiles.size,
     verified: testRuns.length > 0 && testRuns[testRuns.length - 1].ok,
 
@@ -252,6 +258,8 @@ const SUMMED_FIELDS = [
   'compileFailures',
   'compileScoped',
   'unknownSymbolsFlagged',
+  'outlineReads',
+  'envelopeReads',
   'wallMs',
 ] as const;
 

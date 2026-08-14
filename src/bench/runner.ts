@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runAgent } from '../agent/loop.js';
-import { runVerification } from '../agent/verify.js';
+import { runCompile, runVerification } from '../agent/verify.js';
 import type { AgentConfig } from '../config.js';
 import { DockerExec, copyOut, startContainer } from '../exec/docker.js';
 import { LocalExec } from '../exec/local.js';
@@ -70,6 +70,21 @@ export async function runInstance(
       : new NullGraphProvider();
     await graph.index();
 
+    // A freshly cloned repo often cannot build: dependencies are not fetched, toolchains
+    // differ, generated files are missing. If the compile oracle fires in that state it
+    // reports pre-existing breakage as the agent's fault on every single edit — worse than
+    // having no oracle at all. So check the baseline first and switch it off if it is dirty.
+    let config = options.config;
+    if (config.compileAfterEdit) {
+      const baseline = await runCompile(workspace.root, [], graph, exec, config.compileTimeoutMs);
+      if (baseline && !baseline.ok) {
+        config = { ...config, compileAfterEdit: false };
+        options.onEvent?.(
+          `compile oracle disabled: ${workspace.instanceId} does not build at its base commit`,
+        );
+      }
+    }
+
     const llm = createProvider(options.provider);
     const result = await runAgent({
       root: workspace.root,
@@ -77,7 +92,7 @@ export async function runInstance(
       llm,
       graph,
       exec,
-      config: options.config,
+      config,
       runId: `${workspace.instanceId}-${options.graph ? 'graph' : 'base'}`,
       onEvent: options.onEvent,
     });
@@ -90,7 +105,7 @@ export async function runInstance(
         result.editedFiles,
         graph,
         exec,
-        options.config.bashTimeoutMs,
+        config.bashTimeoutMs,
       );
       if (verification) {
         result.trace.emit({

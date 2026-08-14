@@ -13,8 +13,8 @@ import { renderReport } from '../telemetry/report.js';
 import type { TraceEvent } from '../telemetry/trace.js';
 import { loadDataset } from '../bench/dataset.js';
 import { evaluateInstance, renderEvalSummary, summarise, type InstanceEval } from '../bench/graph-eval.js';
-import { writePredictions } from '../bench/predictions.js';
-import { runInstance, type BenchOptions } from '../bench/runner.js';
+import { type BenchOptions } from '../bench/runner.js';
+import { runSweep } from '../bench/sweep.js';
 import { runOfficialHarness } from '../bench/harness.js';
 
 const program = new Command();
@@ -202,6 +202,9 @@ program
   .option('--container-workdir <path>', 'repo path inside the instance image', '/workspace')
   .option('--max-turns <n>', 'turn budget per instance')
   .option('--include-tests', 'keep test-file changes in the patch')
+  .option('-j, --workers <n>', 'instances to run concurrently', '1')
+  .option('--max-cost <usd>', 'stop starting new instances past this spend')
+  .option('--fresh', 're-run instances that already have a result')
   .action(async (opts) => {
     const instances = await loadDataset(opts.dataset, {
       langs: opts.lang?.map((l: string) => l.toLowerCase()),
@@ -231,33 +234,35 @@ program
       excludeTests: !opts.includeTests,
     };
 
-    console.error(`[bench] ${instances.length} instance(s), arm=${arm}, exec=${benchOptions.exec}`);
-    const predictions = [];
-    const allMetrics: RunMetrics[] = [];
+    console.error(
+      `[bench] ${instances.length} instance(s), arm=${arm}, exec=${benchOptions.exec}, ` +
+        `workers=${opts.workers ?? 1}${opts.maxCost ? `, ceiling=$${opts.maxCost}` : ''}`,
+    );
 
-    for (const [i, instance] of instances.entries()) {
-      const id = `${instance.org}__${instance.repo}-${instance.number}`;
-      process.stderr.write(`[bench] (${i + 1}/${instances.length}) ${id} … `);
-      try {
-        const result = await runInstance(instance, benchOptions);
-        predictions.push(result.prediction);
-        allMetrics.push(result.metrics);
-        console.error(
-          `${result.patchBytes ? `${result.patchBytes}b patch` : 'no patch'}, ` +
-            `${result.metrics.modelCalls} model calls, ${result.metrics.uniqueFilesInspected} files`,
-        );
-      } catch (error) {
-        console.error(`failed: ${(error as Error).message}`);
-      }
-    }
+    const outcome = await runSweep(instances, {
+      ...benchOptions,
+      workers: opts.workers ? Number(opts.workers) : 1,
+      maxCostUsd: opts.maxCost ? Number(opts.maxCost) : undefined,
+      fresh: Boolean(opts.fresh),
+      onProgress: (line) => console.error(`[bench] ${line}`),
+    });
 
     const predictionsFile = path.join(outDir, 'predictions.jsonl');
-    await writePredictions(predictionsFile, predictions);
-    const summary = aggregate(arm, allMetrics);
+    const summary = aggregate(arm, outcome.results.map((r) => r.metrics));
     await writeFile(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
 
-    console.error(`\n[bench] wrote ${predictions.length} prediction(s) → ${predictionsFile}`);
-    console.error(`[bench] summary → ${path.join(outDir, 'summary.json')}`);
+    console.error('');
+    if (outcome.resumed) console.error(`[bench] ${outcome.resumed} instance(s) resumed, not re-run`);
+    if (outcome.failed.length) {
+      console.error(`[bench] ${outcome.failed.length} failed:`);
+      for (const failure of outcome.failed.slice(0, 10)) {
+        console.error(`         ${failure.instanceId}: ${failure.error}`);
+      }
+    }
+    if (outcome.stoppedEarly) console.error(`[bench] stopped early — ${outcome.stoppedEarly}`);
+
+    console.error(`[bench] ${outcome.results.length} prediction(s) → ${predictionsFile}`);
+    console.error(`[bench] $${outcome.costUsd.toFixed(4)} spent; summary → ${path.join(outDir, 'summary.json')}`);
     console.error(
       `[bench] score with: sydes score --dataset ${opts.dataset.join(' ')} --predictions ${predictionsFile}`,
     );

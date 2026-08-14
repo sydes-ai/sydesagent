@@ -123,6 +123,8 @@ function fakeRun(overrides: Partial<RunMetrics>): RunMetrics {
     compileFailures: 0,
     compileScoped: 1,
     unknownSymbolsFlagged: 0,
+    outlineReads: 0,
+    envelopeReads: 0,
     testFilesDiscovered: 1,
     verified: true,
     accessBySource: { graph: 0, search: 8, model: 0, task: 0, unseen: 0 },

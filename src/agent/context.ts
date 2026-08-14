@@ -18,10 +18,21 @@ export interface TrimOutcome {
  * at a hard ceiling, and when it does, it takes a large bite (oldest results first) rather
  * than nibbling every turn and paying the cache reset repeatedly.
  */
+/** First line of our own read_file results, e.g. `src/a.ts (48 lines)`. */
+const READ_HEADER = /^(\S+) \((?:\d+ lines|lines \d+-\d+ of \d+)\)$/;
+
 export class ContextManager {
   maxObserved = 0;
 
-  constructor(private readonly ceilingTokens: number) {}
+  constructor(
+    private readonly ceilingTokens: number,
+    /**
+     * Turns a trimmed file body into its outline. Same cache cost as a bare stub - the
+     * prefix is rewritten either way - but it keeps the file's shape instead of throwing it
+     * away, so the model can decide whether to re-read without guessing.
+     */
+    private readonly outlineFor?: (file: string) => string,
+  ) {}
 
   estimate(messages: Message[]): number {
     let total = 0;
@@ -60,9 +71,14 @@ export class ContextManager {
       if (content.length < 400) continue;
       if (/^(Edited|Wrote) /.test(content)) continue;
 
+      const file = READ_HEADER.exec(content.split('\n', 1)[0])?.[1];
+      const outline = file ? this.outlineFor?.(file) : undefined;
+
       trimmedMessages[i] = {
         ...message,
-        content: `[earlier ${message.name ?? 'tool'} result trimmed to save context: ${content.length} characters. Re-run the tool if you need it again.]`,
+        content: outline
+          ? `[earlier read of ${file} trimmed to its structure to save context; re-read it or use read_symbol for a specific part]\n${outline}`
+          : `[earlier ${message.name ?? 'tool'} result trimmed to save context: ${content.length} characters. Re-run the tool if you need it again.]`,
       };
       trimmed++;
       if (this.estimate(trimmedMessages) <= target) break;

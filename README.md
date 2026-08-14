@@ -93,6 +93,24 @@ no extra model turn because they ride along with a tool result the model already
 
 Each is individually toggleable, because each is a claim that has to survive measurement.
 
+## Using structure to send less code
+
+Everything above is *additive* — the graph appends relationships to something the model was
+going to read anyway. This is the substitutive half, and it is where the graph pays for itself.
+
+**A read too long to send returns the file's structure, not an arbitrary prefix.** Truncating
+at line 600 is expensive *and* hides most of the file; an outline is both smaller and more
+useful. Measured on this repository, outlines run **94–95% smaller** than the files they
+describe (2,870 → 155 tokens for `files.ts`).
+
+**`read_symbol` returns a change envelope**: the symbol in full, an outline of the rest of its
+file, and the signatures of what it calls and what calls it — one retrieval carrying what
+three file reads would.
+
+The unit is deliberately not "one symbol". Every turn re-sends the whole conversation, so
+turns are the multiplier: single-symbol reads trade bytes for turns and lose. The envelope
+sits in between, sized so a single call is usually enough to make a correct edit.
+
 ## Two correctness oracles that cost no tokens
 
 Most of what an agent gets wrong is expensive to detect. Two failure modes are not.
@@ -193,7 +211,8 @@ a safety valve at `contextTrimCeiling` rather than a routine economy — see
 ```bash
 # 1. produce predictions (the official {org, repo, number, fix_patch} JSONL)
 sydes bench --dataset multi-swe-bench.jsonl --limit 20 --graph on \
-  --provider anthropic --model claude-sonnet-5
+  --provider anthropic --model claude-sonnet-5 \
+  --workers 4 --max-cost 25
 
 # 2. score with the official harness (needs Docker + the Python package)
 sydes score --dataset multi-swe-bench.jsonl --predictions runs/bench/graph/predictions.jsonl
@@ -206,6 +225,16 @@ Each instance gets a workspace cloned at `base.sha` from a cached bare mirror. T
 built from `title`, `body` and `resolved_issues` only — `fix_patch` and `test_patch` are the
 answer key and never reach the agent, which is asserted by a test. Test-file changes are
 excluded from the emitted patch, since the harness applies its own test patch on top.
+
+A sweep is long, costs money and fails in the middle, so completed instances are skipped on a
+re-run (`--fresh` overrides), predictions are rewritten after every instance, `--max-cost`
+stops before starting work that would exceed a ceiling, and `--workers` runs instances
+concurrently.
+
+The compile oracle checks the repository builds **at its base commit** before the agent starts,
+and switches itself off for that instance if not. A freshly cloned repo frequently cannot build
+— unfetched dependencies, missing generated files — and an oracle that blames pre-existing
+breakage on every edit is worse than no oracle.
 
 `--exec docker:<image>` runs commands inside the instance image while the agent and the graph
 work on a host copy, so no Node has to be installed into the benchmark images.
@@ -235,7 +264,7 @@ fixtures/       small Go and TS repos used as golden graphs and agent workspaces
 
 Working: the graph, the agent loop and its tools, all five enrichments, the ledger, the
 telemetry and A/B report, cost and cache accounting, prompt caching, the token-free graph
-benchmark, the symbol and compiler oracles, verification, the Multi-SWE-bench runner and the
+benchmark, the change envelope, the symbol and compiler oracles, verification, the Multi-SWE-bench runner and the
 harness wrapper. 86 tests cover them, including a benchmark instance and a graph evaluation
 that both run end-to-end offline against a local git mirror.
 

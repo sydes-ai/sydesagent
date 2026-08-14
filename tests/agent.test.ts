@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runAgent } from '../src/agent/loop.js';
+import { CORE_TOOLS } from '../src/agent/tools/index.js';
 import { loadAgentConfig } from '../src/config.js';
 import { LocalExec } from '../src/exec/local.js';
 import { LocalGraphProvider, NullGraphProvider, type GraphProvider } from '../src/graph/provider.js';
@@ -365,10 +366,17 @@ describe('graph-off baseline', () => {
     const on = await run(script, { graph: true });
     const off = await run(script, { graph: false });
 
-    const core = (names: string[]) => names.filter((n) => !n.startsWith('graph_')).sort();
-    expect(core(on.llm.requests[0].tools!.map((t) => t.name))).toEqual(
-      core(off.llm.requests[0].tools!.map((t) => t.name)),
-    );
+    // Compare against the declared core set rather than a name prefix: graph-only tools do
+    // not all start with "graph_" (read_symbol does not), and a prefix rule would quietly
+    // let one leak into the baseline comparison.
+    const coreNames = new Set(CORE_TOOLS.map((t) => t.name));
+    const core = (names: string[]) => names.filter((n) => coreNames.has(n)).sort();
+
+    const onTools = on.llm.requests[0].tools!.map((t) => t.name);
+    const offTools = off.llm.requests[0].tools!.map((t) => t.name);
+    expect(core(onTools)).toEqual(core(offTools));
+    // And the baseline gets nothing beyond the core set.
+    expect(offTools.filter((n) => !coreNames.has(n))).toEqual([]);
   });
 });
 

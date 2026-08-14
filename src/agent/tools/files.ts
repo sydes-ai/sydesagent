@@ -145,6 +145,24 @@ export const readFileTool: Tool<{ path: string; start_line?: number; end_line?: 
     ctx.ledger.noteRead(rel, hash, lines.length, ctx.turn);
     recordAccess(ctx, rel, 'read');
 
+    // A file too long to send would otherwise be cut at an arbitrary line, which costs a lot
+    // of tokens *and* hides most of the file. An outline is strictly better on both counts:
+    // fewer tokens, and it shows what is actually there. Only substitutes where the read was
+    // going to be truncated anyway, so nothing complete is ever withheld.
+    if (!wantsSlice && lines.length > ctx.config.maxReadLines) {
+      const outline = ctx.graph.outline(rel);
+      if (outline) {
+        ctx.ledger.expansions.add(rel);
+        return {
+          content:
+            `${rel} is ${lines.length} lines — too long to send in full, so here is its structure.\n` +
+            `Use read_symbol <name> for one symbol with its context, or read_file with ` +
+            `start_line/end_line for a specific region.\n\n${outline}`,
+          note: 'outline',
+        };
+      }
+    }
+
     const header = truncated
       ? `${rel} (lines ${start}-${end} of ${lines.length})`
       : `${rel} (${lines.length} lines)`;

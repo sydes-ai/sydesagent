@@ -40,6 +40,8 @@ const ROWS: Row[] = [
   { label: 'Compile failures caught', key: 'compileFailures', direction: 'higher' },
   { label: 'Compile checks scoped by graph', key: 'compileScoped', direction: 'higher' },
   { label: 'Unknown symbols flagged', key: 'unknownSymbolsFlagged', direction: 'higher' },
+  { label: 'Outline reads (instead of truncation)', key: 'outlineReads', direction: 'higher' },
+  { label: 'Change envelopes', key: 'envelopeReads', direction: 'higher' },
   { label: 'Graph lookups', key: 'graphLookups', direction: 'higher' },
   { label: 'Graph lookup ms (total)', key: 'graphLookupMsTotal', direction: 'lower' },
   { label: 'Graph suggestions surfaced', key: 'graphSuggestionsSurfaced', direction: 'higher' },
