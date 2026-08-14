@@ -19,8 +19,12 @@ interface Row {
 
 const ROWS: Row[] = [
   { label: 'Resolved / verified', key: '__resolveRate', direction: 'higher', headline: true, format: (v) => `${(v * 100).toFixed(0)}%` },
+  { label: 'Cost (USD)', key: 'costUsd', direction: 'lower', headline: true, format: (v) => `$${v.toFixed(4)}` },
   { label: 'Model calls', key: 'modelCalls', direction: 'lower', headline: true },
   { label: 'Total tokens', key: 'totalTokens', direction: 'lower', headline: true },
+  { label: 'Cache hit rate', key: 'cacheHitRate', direction: 'higher', format: (v) => `${(v * 100).toFixed(0)}%` },
+  { label: 'Cached input tokens', key: 'cacheReadTokens', direction: 'higher' },
+  { label: 'Uncached input tokens', key: 'inputTokens', direction: 'lower' },
   { label: 'Tool calls', key: 'toolCalls', direction: 'lower', headline: true },
   { label: 'Unique files inspected', key: 'uniqueFilesInspected', direction: 'lower', headline: true },
   { label: 'Search calls (grep/glob)', key: 'searchCalls', direction: 'lower' },
@@ -70,6 +74,9 @@ export interface Verdict {
  * Adding structural context while exploration stays flat is explicitly a failure.
  */
 export function verdict(baseline: AggregateMetrics, candidate: AggregateMetrics): Verdict {
+  // Cost is deliberately absent from the exploration index: it moves with model choice and
+  // cache behaviour, so folding it in here would let a cheaper model masquerade as less
+  // exploration. Cost is reported on its own row and judged separately.
   const explorationKeys = ['modelCalls', 'toolCalls', 'uniqueFilesInspected', 'totalTokens'];
   const ratios = explorationKeys.map((key) => {
     const base = valueOf(baseline, key);
@@ -139,6 +146,20 @@ export function renderReport(baseline: AggregateMetrics, candidate: AggregateMet
     `Exploration index change: ${(result.explorationDelta * 100).toFixed(1)}% (mean of model calls, tool calls, unique files inspected, total tokens). ` +
       `Correctness change: ${(result.correctnessDelta * 100).toFixed(1)} points.`,
   );
+
+  const baseCost = valueOf(baseline, 'costUsd');
+  const candCost = valueOf(candidate, 'costUsd');
+  if (baseCost > 0 || candCost > 0) {
+    const delta = baseCost === 0 ? 0 : ((candCost - baseCost) / baseCost) * 100;
+    lines.push('');
+    lines.push(
+      `Cost per run: $${baseCost.toFixed(4)} → $${candCost.toFixed(4)} (${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%). ` +
+        `Cache hit rate: ${(valueOf(baseline, 'cacheHitRate') * 100).toFixed(0)}% → ${(valueOf(candidate, 'cacheHitRate') * 100).toFixed(0)}%.`,
+    );
+  } else {
+    lines.push('');
+    lines.push('Cost not reported: no price is configured for this model (set SYDES_PRICING to add one).');
+  }
 
   return lines.join('\n');
 }

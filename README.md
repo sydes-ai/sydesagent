@@ -126,6 +126,36 @@ wrong edge is worse than a missing one**, so name lookups are case-sensitive (in
 Languages: Go and TypeScript/JavaScript, behind a `LanguageAdapter` interface. Java, Rust and
 C/C++ are additive — the grammars already ship with the parser stack.
 
+## Measuring the graph without paying for it
+
+`fix_patch` in the benchmark names exactly the files a correct change touches — an answer key
+the graph can be scored against with no model in the loop:
+
+```bash
+sydes graph-eval --dataset multi-swe-bench.jsonl --limit 200 --lang go
+```
+
+Each gold file in turn plays the foothold the agent found, and the metric is how much of the
+*rest* of the change surface the graph reaches. A directory baseline ("look in the same
+folder") is scored alongside it on every run, because a ranking number without a baseline means
+nothing. Seconds per instance, zero cost — so resolution quality can be iterated on directly
+instead of inferred from agent behaviour.
+
+## Cost
+
+An agent loop re-sends the whole conversation every turn, so a token introduced at turn `t` of
+a `T`-turn run is billed `T − t + 1` times. Measured here, over half of all input tokens were
+the static prefix — system prompt and tool schemas — re-sent unchanged every turn.
+
+Sydes caches that prefix (explicit `cache_control` breakpoints on Anthropic, automatic on
+OpenAI) and reports cached and uncached tokens separately, priced per model. A measured
+`gpt-5-mini` run reached a **77% cache hit rate**, about 59% cheaper than the same run billed
+at uncached rates.
+
+Because trimming history invalidates the cache from the edit point onward, context trimming is
+a safety valve at `contextTrimCeiling` rather than a routine economy — see
+[docs/metrics.md](docs/metrics.md).
+
 ## Multi-SWE-bench
 
 ```bash
@@ -172,9 +202,10 @@ fixtures/       small Go and TS repos used as golden graphs and agent workspaces
 ## Status
 
 Working: the graph, the agent loop and its tools, all four enrichments, the ledger, the
-telemetry and A/B report, verification, the Multi-SWE-bench runner and the harness wrapper.
-47 tests cover them, including a benchmark instance that runs end-to-end offline against a local
-git mirror.
+telemetry and A/B report, cost and cache accounting, prompt caching, the token-free graph
+benchmark, verification, the Multi-SWE-bench runner and the harness wrapper. 65 tests cover
+them, including a benchmark instance and a graph evaluation that both run end-to-end offline
+against a local git mirror.
 
 Not yet done: the experiment itself. It needs a model strong enough to use tools well — the
 local `llama3.1:8b` smoke run exercises the plumbing but is not evidence either way. Java, Rust

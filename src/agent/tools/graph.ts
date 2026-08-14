@@ -137,6 +137,56 @@ export const graphImpactTool: Tool<Record<string, never>> = {
   },
 };
 
+/**
+ * The whole graph surface as a single tool.
+ *
+ * Six tool schemas ride in the static prefix on every turn. This trades their distinct names -
+ * which models pick between more reliably - for one enum, and is measured rather than assumed.
+ */
+export const graphCompactTool: Tool<{ relation: string; anchor?: string }> = {
+  name: 'graph',
+  description:
+    'Query the code graph about a file or symbol that exists in the code. relation: expand (neighborhood: calls, callers, tests), callers, callees, tests, find (locate a symbol), impact (what your edits so far affect). Every answer comes back with paths you can open.',
+  parameters: {
+    type: 'object',
+    properties: {
+      relation: {
+        type: 'string',
+        enum: ['expand', 'callers', 'callees', 'tests', 'find', 'impact'],
+      },
+      anchor: {
+        type: 'string',
+        description: 'Repository path, symbol name, or path#symbol. Omit only for impact.',
+      },
+    },
+    required: ['relation'],
+  },
+  schema: z.object({
+    relation: z.enum(['expand', 'callers', 'callees', 'tests', 'find', 'impact']),
+    anchor: z.string().optional(),
+  }),
+  graphOnly: true,
+
+  async run(args, ctx) {
+    if (args.relation === 'impact') return graphImpactTool.run({}, ctx);
+    if (!args.anchor) {
+      return { content: `relation "${args.relation}" needs an anchor.`, isError: true };
+    }
+    switch (args.relation) {
+      case 'expand':
+        return graphExpandTool.run({ anchor: args.anchor }, ctx);
+      case 'callers':
+        return graphCallersTool.run({ anchor: args.anchor }, ctx);
+      case 'callees':
+        return graphCalleesTool.run({ anchor: args.anchor }, ctx);
+      case 'tests':
+        return graphTestsTool.run({ anchor: args.anchor }, ctx);
+      default:
+        return graphFindTool.run({ name: args.anchor }, ctx);
+    }
+  },
+};
+
 export const GRAPH_TOOLS = [
   graphExpandTool,
   graphFindTool,
@@ -145,3 +195,5 @@ export const GRAPH_TOOLS = [
   graphTestsTool,
   graphImpactTool,
 ];
+
+export const GRAPH_TOOLS_COMPACT = [graphCompactTool];

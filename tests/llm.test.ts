@@ -92,6 +92,9 @@ describe('openai provider', () => {
     const response = await provider.chat({ messages: conversation, tools });
 
     const sent = captured[0].body;
+    // OpenAI caches automatically; prompt_tokens includes the cached span, so the provider
+    // subtracts it to leave the billed remainder.
+    expect(response.usage.cacheReadTokens).toBe(0);
     expect(captured[0].headers.authorization).toBe('Bearer test-key');
     expect(sent.messages[2].tool_calls[0].function.arguments).toBe('{"path":"a.go"}');
     expect(sent.messages[3]).toEqual({
@@ -102,7 +105,28 @@ describe('openai provider', () => {
     expect(sent.tools[0].function.name).toBe('read_file');
 
     expect(response.toolCalls).toEqual([{ id: 'x1', name: 'grep', arguments: { pattern: 'foo' } }]);
-    expect(response.usage).toEqual({ inputTokens: 120, outputTokens: 8 });
+    expect(response.usage).toEqual({ inputTokens: 120, outputTokens: 8, cacheReadTokens: 0 });
+  });
+
+  it('separates cached prefix tokens from billed input tokens', async () => {
+    captured.length = 0;
+    responses = [
+      {
+        choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 9000,
+          completion_tokens: 20,
+          prompt_tokens_details: { cached_tokens: 8192 },
+        },
+      },
+    ];
+
+    const response = await new OpenAIProvider('gpt-5-mini', 'k', baseUrl).chat({
+      messages: conversation,
+    });
+
+    expect(response.usage.inputTokens).toBe(808);
+    expect(response.usage.cacheReadTokens).toBe(8192);
   });
 
   it('retries a transient failure and then succeeds', async () => {
@@ -185,7 +209,10 @@ describe('anthropic provider', () => {
     const sent = captured[0].body;
     expect(captured[0].headers['x-api-key']).toBe('test-key');
     expect(captured[0].headers['anthropic-version']).toBe('2023-06-01');
-    expect(sent.system).toBe('you are sydes');
+    // System is sent as a block array so the static prefix carries a cache breakpoint.
+    expect(sent.system).toEqual([
+      { type: 'text', text: 'you are sydes', cache_control: { type: 'ephemeral' } },
+    ]);
     expect(sent.messages.map((m: any) => m.role)).toEqual(['user', 'assistant', 'user']);
     // Both tool results collapse into a single user turn with two blocks.
     expect(sent.messages[2].content).toHaveLength(2);
@@ -198,7 +225,91 @@ describe('anthropic provider', () => {
       name: 'graph_expand',
       arguments: { anchor: 'a.go' },
     });
-    expect(response.usage).toEqual({ inputTokens: 200, outputTokens: 12 });
+    expect(response.usage).toEqual({
+      inputTokens: 200,
+      outputTokens: 12,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  /**
+   * The static prefix is over half of all input tokens and is re-sent every turn, so the
+   * breakpoints are the single largest cost lever in the system.
+   */
+  it('places cache breakpoints on the static prefix and the newest turn', async () => {
+    captured.length = 0;
+    responses = [{ content: [], stop_reason: 'end_turn' }];
+
+    await new AnthropicProvider('claude-sonnet-5', 'k', baseUrl).chat({ messages: conversation });
+
+    const sent = captured[0].body;
+    expect(sent.system[0].cache_control).toEqual({ type: 'ephemeral' });
+
+    const lastTurn = sent.messages[sent.messages.length - 1];
+    const lastBlock = lastTurn.content[lastTurn.content.length - 1];
+    expect(lastBlock.cache_control).toEqual({ type: 'ephemeral' });
+
+    // At most four breakpoints are allowed per request.
+    const marks = JSON.stringify(sent).match(/"cache_control"/g) ?? [];
+    expect(marks.length).toBeLessThanOrEqual(4);
+  });
+
+  it('adds a second breakpoint so long turns stay inside the 20-block lookback', async () => {
+    captured.length = 0;
+    responses = [{ content: [], stop_reason: 'end_turn' }];
+
+    // 30 alternating turns produce well over 20 content blocks.
+    const long: Message[] = [{ role: 'system', content: 's' }];
+    for (let i = 0; i < 15; i++) {
+      long.push({ role: 'user', content: `q${i}` });
+      long.push({ role: 'assistant', content: `a${i}` });
+    }
+
+    await new AnthropicProvider('claude-sonnet-5', 'k', baseUrl).chat({ messages: long });
+
+    const marks = JSON.stringify(captured[0].body.messages).match(/"cache_control"/g) ?? [];
+    expect(marks.length).toBe(2);
+  });
+
+  it('omits cache_control entirely when caching is disabled', async () => {
+    captured.length = 0;
+    responses = [{ content: [], stop_reason: 'end_turn' }];
+
+    await new AnthropicProvider('claude-sonnet-5', 'k', baseUrl).chat({
+      messages: conversation,
+      cache: false,
+    });
+
+    expect(captured[0].body.system).toBe('you are sydes');
+    expect(JSON.stringify(captured[0].body)).not.toContain('cache_control');
+  });
+
+  it('reports cache reads and writes separately from uncached input', async () => {
+    captured.length = 0;
+    responses = [
+      {
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        usage: {
+          input_tokens: 120,
+          output_tokens: 10,
+          cache_read_input_tokens: 8000,
+          cache_creation_input_tokens: 400,
+        },
+      },
+    ];
+
+    const response = await new AnthropicProvider('claude-sonnet-5', 'k', baseUrl).chat({
+      messages: conversation,
+    });
+
+    expect(response.usage).toEqual({
+      inputTokens: 120,
+      outputTokens: 10,
+      cacheReadTokens: 8000,
+      cacheWriteTokens: 400,
+    });
   });
 });
 

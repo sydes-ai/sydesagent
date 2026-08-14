@@ -12,6 +12,7 @@ import { aggregate, computeMetrics, metricsFromEvents, type RunMetrics } from '.
 import { renderReport } from '../telemetry/report.js';
 import type { TraceEvent } from '../telemetry/trace.js';
 import { loadDataset } from '../bench/dataset.js';
+import { evaluateInstance, renderEvalSummary, summarise, type InstanceEval } from '../bench/graph-eval.js';
 import { writePredictions } from '../bench/predictions.js';
 import { runInstance, type BenchOptions } from '../bench/runner.js';
 import { runOfficialHarness } from '../bench/harness.js';
@@ -260,6 +261,59 @@ program
     console.error(
       `[bench] score with: sydes score --dataset ${opts.dataset.join(' ')} --predictions ${predictionsFile}`,
     );
+  });
+
+program
+  .command('graph-eval')
+  .description('Measure change-surface recall against gold patches — no model calls, no cost')
+  .requiredOption('-d, --dataset <files...>', 'dataset JSONL file(s)')
+  .option('-l, --limit <n>', 'maximum instances')
+  .option('--lang <langs...>', 'filter by language')
+  .option('--repos <repos...>', 'filter by org/repo')
+  .option('-k, --k <values>', 'cutoffs to report', '5,10,20')
+  .option('-w, --workdir <dir>', 'clone and workspace cache', '.sydes-bench')
+  .option('-o, --out <file>', 'write the full JSON result')
+  .action(async (opts) => {
+    const ks = String(opts.k)
+      .split(',')
+      .map((value: string) => Number(value.trim()))
+      .filter((value: number) => Number.isFinite(value) && value > 0);
+
+    const instances = await loadDataset(opts.dataset, {
+      langs: opts.lang?.map((l: string) => l.toLowerCase()),
+      repos: opts.repos,
+      limit: opts.limit ? Number(opts.limit) : undefined,
+    });
+    if (!instances.length) {
+      console.error('no instances matched the filters');
+      process.exitCode = 1;
+      return;
+    }
+
+    const results: InstanceEval[] = [];
+    for (const [i, instance] of instances.entries()) {
+      const id = `${instance.org}__${instance.repo}-${instance.number}`;
+      process.stderr.write(`[eval] (${i + 1}/${instances.length}) ${id} … `);
+      try {
+        const result = await evaluateInstance(instance, { workdir: path.resolve(opts.workdir), k: ks });
+        results.push(result);
+        console.error(
+          result.skipped
+            ? `skipped (${result.skipped})`
+            : `recall@${ks[0]}=${(result.recall[ks[0]] * 100).toFixed(0)}% over ${result.anchors} anchor(s)`,
+        );
+      } catch (error) {
+        console.error(`failed: ${(error as Error).message}`);
+      }
+    }
+
+    const summary = summarise(results, ks);
+    if (opts.out) {
+      await mkdir(path.dirname(path.resolve(opts.out)), { recursive: true });
+      await writeFile(opts.out, JSON.stringify(summary, null, 2));
+      console.error(`[eval] ${opts.out}`);
+    }
+    console.log(`\n${renderEvalSummary(summary)}`);
   });
 
 program

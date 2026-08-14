@@ -12,7 +12,44 @@ interface AnthropicContentBlock {
 interface AnthropicResponse {
   content: AnthropicContentBlock[];
   stop_reason: string;
-  usage?: { input_tokens: number; output_tokens: number };
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
+}
+
+const CACHE_CONTROL = { type: 'ephemeral' } as const;
+
+/**
+ * Places cache breakpoints on the conversation.
+ *
+ * Render order is tools → system → messages, so a breakpoint at the end of the system prompt
+ * caches the whole static prefix - the 58% of our input tokens that never change. The rest go
+ * on recent turns so the growing conversation prefix caches too.
+ *
+ * A breakpoint only searches back 20 content blocks for a prior entry, and one of our turns
+ * can add several blocks (an assistant turn with three tool calls plus their results is four),
+ * so a second message breakpoint is placed further back to keep the chain reachable. The API
+ * allows at most four breakpoints in total.
+ */
+function markCacheBreakpoints(messages: { role: string; content: unknown[] }[]): void {
+  const positions: { message: number; block: number }[] = [];
+  messages.forEach((message, mi) => {
+    message.content.forEach((_, bi) => positions.push({ message: mi, block: bi }));
+  });
+  if (!positions.length) return;
+
+  const targets = new Set<number>([positions.length - 1]);
+  // ~15 blocks back keeps the next request inside the 20-block lookback window.
+  if (positions.length > 15) targets.add(positions.length - 15);
+
+  for (const index of targets) {
+    const at = positions[index];
+    const block = messages[at.message].content[at.block] as Record<string, unknown>;
+    if (block && typeof block === 'object') block.cache_control = CACHE_CONTROL;
+  }
 }
 
 /**
@@ -71,13 +108,21 @@ export class AnthropicProvider implements LLMProvider {
     const started = Date.now();
     const { system, messages } = toAnthropicMessages(request.messages);
 
+    const caching = request.cache !== false;
+    if (caching) markCacheBreakpoints(messages as { role: string; content: unknown[] }[]);
+
     const body: Record<string, unknown> = {
       model: this.model,
       messages,
       max_tokens: request.maxTokens ?? 8192,
       temperature: request.temperature ?? 0,
     };
-    if (system) body.system = system;
+    if (system) {
+      // As a block array so the static prefix (tools + system) gets its own breakpoint.
+      body.system = caching
+        ? [{ type: 'text', text: system, cache_control: CACHE_CONTROL }]
+        : system;
+    }
     if (request.tools?.length) {
       body.tools = request.tools.map((tool) => ({
         name: tool.name,
@@ -109,8 +154,11 @@ export class AnthropicProvider implements LLMProvider {
       text,
       toolCalls,
       usage: {
+        // `input_tokens` is the uncached remainder only; cached spans are reported separately.
         inputTokens: data.usage?.input_tokens ?? 0,
         outputTokens: data.usage?.output_tokens ?? 0,
+        cacheReadTokens: data.usage?.cache_read_input_tokens ?? 0,
+        cacheWriteTokens: data.usage?.cache_creation_input_tokens ?? 0,
       },
       stopReason: data.stop_reason ?? 'end_turn',
       latencyMs: Date.now() - started,

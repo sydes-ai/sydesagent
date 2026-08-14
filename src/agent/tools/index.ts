@@ -1,5 +1,5 @@
 import { editFileTool, listDirTool, readFileTool, writeFileTool } from './files.js';
-import { GRAPH_TOOLS } from './graph.js';
+import { GRAPH_TOOLS, GRAPH_TOOLS_COMPACT } from './graph.js';
 import { globTool, grepTool } from './search.js';
 import { bashTool, finishTool } from './shell.js';
 import type { Tool } from './types.js';
@@ -23,10 +23,15 @@ export const CORE_TOOLS: Tool[] = [
  * schema and the prompt, so the baseline is a genuinely ordinary coding agent rather than one
  * being told about a capability it does not have.
  */
-export function buildTools(options: { graph: boolean; allowBash: boolean }): Tool[] {
+export function buildTools(options: {
+  graph: boolean;
+  allowBash: boolean;
+  compactGraphTools?: boolean;
+}): Tool[] {
   const tools = CORE_TOOLS.filter((tool) => options.allowBash || tool.name !== 'bash');
-  return options.graph ? [...tools, ...GRAPH_TOOLS] : tools;
+  if (!options.graph) return tools;
+  return [...tools, ...(options.compactGraphTools ? GRAPH_TOOLS_COMPACT : GRAPH_TOOLS)];
 }
 
 export * from './types.js';
-export { GRAPH_TOOLS };
+export { GRAPH_TOOLS, GRAPH_TOOLS_COMPACT };

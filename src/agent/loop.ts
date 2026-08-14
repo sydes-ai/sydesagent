@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentConfig } from '../config.js';
 import type { ExecutionEnvironment } from '../exec/types.js';
 import type { GraphProvider } from '../graph/provider.js';
+import { estimateCost } from '../llm/pricing.js';
 import type { LLMProvider, Message, ToolCall } from '../llm/types.js';
 import { Trace } from '../telemetry/trace.js';
 import { walkRepo } from '../util/fs.js';
@@ -47,7 +48,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   const runId = options.runId ?? randomUUID().slice(0, 8);
   const trace = new Trace(runId);
   const ledger = new Ledger();
-  const context = new ContextManager(config.contextTokenBudget);
+  const context = new ContextManager(config.contextTrimCeiling);
   const started = Date.now();
 
   const files = await walkRepo(root);
@@ -71,7 +72,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     trace.emit({ type: 'suggestion_surfaced', turn: 0, paths: fromTask, source: 'task' });
   }
 
-  const tools = buildTools({ graph: graph.enabled, allowBash: config.allowBash });
+  const tools = buildTools({
+    graph: graph.enabled,
+    allowBash: config.allowBash,
+    compactGraphTools: config.compactGraphTools,
+  });
   const byName = new Map<string, Tool>(tools.map((tool) => [tool.name, tool]));
   const schemas = toolSchemas(tools);
 
@@ -88,8 +93,18 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
 
   while (turn < config.maxTurns) {
     turn++;
-    messages = context.trim(messages);
-    const contextTokens = context.estimate(messages);
+    const trim = context.trim(messages);
+    if (trim.trimmed) {
+      messages = trim.messages;
+      trace.emit({
+        type: 'context_trim',
+        turn,
+        beforeTokens: trim.beforeTokens,
+        afterTokens: trim.afterTokens,
+        trimmedResults: trim.trimmed,
+      });
+    }
+    const contextTokens = trim.afterTokens;
 
     let response;
     try {
@@ -98,6 +113,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         tools: schemas,
         temperature: config.temperature,
         maxTokens: config.maxTokens,
+        cache: config.promptCache,
       });
     } catch (error) {
       finalMessage = `model call failed: ${(error as Error).message}`;
@@ -105,13 +121,23 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       break;
     }
 
-    totalTokens += response.usage.inputTokens + response.usage.outputTokens;
+    const cacheRead = response.usage.cacheReadTokens ?? 0;
+    const cacheWrite = response.usage.cacheWriteTokens ?? 0;
+    totalTokens += response.usage.inputTokens + response.usage.outputTokens + cacheRead + cacheWrite;
     trace.emit({
       type: 'model_call',
       turn,
       latencyMs: response.latencyMs,
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,
+      cacheReadTokens: cacheRead,
+      cacheWriteTokens: cacheWrite,
+      costUsd: estimateCost(llm.model, {
+        inputTokens: response.usage.inputTokens,
+        outputTokens: response.usage.outputTokens,
+        cacheReadTokens: cacheRead,
+        cacheWriteTokens: cacheWrite,
+      }),
       toolCalls: response.toolCalls.map((call) => call.name),
       stopReason: response.stopReason,
       contextTokens,

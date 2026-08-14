@@ -13,6 +13,8 @@ Working rules:
 - Prefer edit_file with exact context over rewriting whole files.
 - Match the conventions of the surrounding code.
 - After editing, run the tests that cover what you changed.
+- Issue independent tool calls together in one turn rather than one per turn. Every turn
+  re-sends the whole conversation, so three reads in one turn cost far less than three turns.
 - Call finish when the task is done, summarising the change and the verification you ran.`;
 
 const GRAPH_SECTION = `

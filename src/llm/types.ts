@@ -35,11 +35,21 @@ export interface ChatRequest {
   tools?: ToolSchema[];
   temperature?: number;
   maxTokens?: number;
+  /**
+   * Ask the provider to cache the stable prefix. Providers that cache automatically ignore it;
+   * Anthropic needs explicit breakpoints. Off only for ablation runs that measure its value.
+   */
+  cache?: boolean;
 }
 
 export interface Usage {
+  /** Uncached input tokens, billed at full rate. */
   inputTokens: number;
   outputTokens: number;
+  /** Prefix tokens served from cache, billed at a fraction of the input rate. */
+  cacheReadTokens?: number;
+  /** Prefix tokens written to cache this call, billed at a premium. */
+  cacheWriteTokens?: number;
 }
 
 export interface ChatResponse {

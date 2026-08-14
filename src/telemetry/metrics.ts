@@ -6,6 +6,7 @@
  * only worth having if it *replaces* exploration. Adding context while exploration stays flat
  * is the failure case, and these numbers are arranged to make that visible rather than hide it.
  */
+import { costKnown } from '../llm/pricing.js';
 import type { PathSource, TraceEvent } from './trace.js';
 
 export interface RunMetrics {
@@ -25,8 +26,16 @@ export interface RunMetrics {
   modelCalls: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** All input tokens, cached or not, plus output. The size of the conversation actually sent. */
   totalTokens: number;
+  /** Share of input tokens served from cache. */
+  cacheHitRate: number;
+  costUsd: number;
+  costKnown: boolean;
   maxContextTokens: number;
+  contextTrims: number;
 
   // Exploration
   toolCalls: number;
@@ -101,6 +110,12 @@ export function computeMetrics(trace: TraceLike, extra: { maxContextTokens?: num
     toolCallsByName[call.name] = (toolCallsByName[call.name] ?? 0) + 1;
   }
 
+  const cacheRead = modelCalls.reduce((sum, c) => sum + (c.cacheReadTokens ?? 0), 0);
+  const totalInput = modelCalls.reduce(
+    (sum, c) => sum + c.inputTokens + (c.cacheReadTokens ?? 0) + (c.cacheWriteTokens ?? 0),
+    0,
+  );
+
   const reads = accesses.filter((a) => a.kind === 'read');
   const uniqueRead = new Set(reads.map((r) => r.pathName));
 
@@ -144,8 +159,18 @@ export function computeMetrics(trace: TraceLike, extra: { maxContextTokens?: num
     modelCalls: modelCalls.length,
     inputTokens: modelCalls.reduce((sum, c) => sum + c.inputTokens, 0),
     outputTokens: modelCalls.reduce((sum, c) => sum + c.outputTokens, 0),
-    totalTokens: modelCalls.reduce((sum, c) => sum + c.inputTokens + c.outputTokens, 0),
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: modelCalls.reduce((sum, c) => sum + (c.cacheWriteTokens ?? 0), 0),
+    totalTokens:
+      modelCalls.reduce(
+        (sum, c) => sum + c.inputTokens + c.outputTokens + (c.cacheReadTokens ?? 0) + (c.cacheWriteTokens ?? 0),
+        0,
+      ),
+    cacheHitRate: totalInput > 0 ? cacheRead / totalInput : 0,
+    costUsd: Number(modelCalls.reduce((sum, c) => sum + (c.costUsd ?? 0), 0).toFixed(6)),
+    costKnown: costKnown(start?.model ?? ''),
     maxContextTokens: extra.maxContextTokens ?? Math.max(0, ...modelCalls.map((c) => c.contextTokens)),
+    contextTrims: pick(events, 'context_trim').length,
 
     toolCalls: toolCalls.length,
     toolCallsByName,
@@ -192,7 +217,10 @@ const SUMMED_FIELDS = [
   'modelCalls',
   'inputTokens',
   'outputTokens',
+  'cacheReadTokens',
+  'cacheWriteTokens',
   'totalTokens',
+  'costUsd',
   'toolCalls',
   'searchCalls',
   'filesInspected',
@@ -222,11 +250,15 @@ export function aggregate(
   }
   totals.maxContextTokens = Math.max(0, ...runs.map((r) => r.maxContextTokens));
   totals.graphLookupMsTotal = runs.reduce((sum, r) => sum + r.graphLookupMsTotal, 0);
+  const inputAll = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens;
+  totals.cacheHitRate = inputAll > 0 ? totals.cacheReadTokens / inputAll : 0;
 
   const means: Record<string, number> = {};
   for (const [key, value] of Object.entries(totals)) {
     means[key] = runs.length ? value / runs.length : 0;
   }
+  // A rate is already normalised; averaging it across runs again would understate it.
+  means.cacheHitRate = totals.cacheHitRate;
 
   const resolved = resolvedFlags
     ? resolvedFlags.filter(Boolean).length

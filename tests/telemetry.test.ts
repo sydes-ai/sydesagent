@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { costKnown, estimateCost, priceFor } from '../src/llm/pricing.js';
 import { aggregate, computeMetrics, type RunMetrics } from '../src/telemetry/metrics.js';
 import { renderReport, verdict } from '../src/telemetry/report.js';
 import { Trace, type TraceEvent } from '../src/telemetry/trace.js';
@@ -25,9 +26,9 @@ describe('metrics', () => {
     const metrics = computeMetrics(
       trace([
         start,
-        { type: 'model_call', turn: 1, latencyMs: 10, inputTokens: 100, outputTokens: 20, toolCalls: ['grep'], stopReason: 'tool_calls', contextTokens: 500 },
+        { type: 'model_call', turn: 1, latencyMs: 10, inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001, toolCalls: ['grep'], stopReason: 'tool_calls', contextTokens: 500 },
         { type: 'tool_call', turn: 1, name: 'grep', args: {}, latencyMs: 5, ok: true, resultBytes: 100 },
-        { type: 'model_call', turn: 2, latencyMs: 10, inputTokens: 300, outputTokens: 40, toolCalls: ['read_file'], stopReason: 'tool_calls', contextTokens: 900 },
+        { type: 'model_call', turn: 2, latencyMs: 10, inputTokens: 300, outputTokens: 40, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.002, toolCalls: ['read_file'], stopReason: 'tool_calls', contextTokens: 900 },
         { type: 'tool_call', turn: 2, name: 'read_file', args: {}, latencyMs: 5, ok: true, resultBytes: 900 },
         { type: 'path_access', turn: 2, pathName: 'a.go', kind: 'read', attributedSource: 'search', firstSurfacedTurn: 1 },
         { type: 'path_access', turn: 3, pathName: 'a.go', kind: 'read', attributedSource: 'search', firstSurfacedTurn: 1 },
@@ -40,6 +41,7 @@ describe('metrics', () => {
 
     expect(metrics.modelCalls).toBe(2);
     expect(metrics.totalTokens).toBe(460);
+    expect(metrics.costUsd).toBeCloseTo(0.003, 6);
     expect(metrics.maxContextTokens).toBe(900);
     expect(metrics.filesInspected).toBe(2);
     expect(metrics.uniqueFilesInspected).toBe(1);
@@ -87,8 +89,14 @@ function fakeRun(overrides: Partial<RunMetrics>): RunMetrics {
     modelCalls: 10,
     inputTokens: 1000,
     outputTokens: 100,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     totalTokens: 1100,
+    cacheHitRate: 0,
+    costUsd: 0.01,
+    costKnown: true,
     maxContextTokens: 5000,
+    contextTrims: 0,
     toolCalls: 20,
     toolCallsByName: {},
     searchCalls: 6,
@@ -117,6 +125,50 @@ function fakeRun(overrides: Partial<RunMetrics>): RunMetrics {
     ...overrides,
   };
 }
+
+describe('cost and caching', () => {
+  /** Cached prefix bills at a fraction of the input rate; conflating them hides the saving. */
+  it('prices cached input far below fresh input', () => {
+    const fresh = estimateCost('claude-sonnet-5', { inputTokens: 100_000, outputTokens: 0 });
+    const cached = estimateCost('claude-sonnet-5', {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 100_000,
+    });
+
+    expect(fresh).toBeCloseTo(0.3, 6);
+    expect(cached).toBeCloseTo(0.03, 6);
+    expect(cached).toBeLessThan(fresh);
+  });
+
+  it('resolves dated model ids by longest prefix', () => {
+    expect(priceFor('gpt-5-mini-2026-08-07')).toEqual(priceFor('gpt-5-mini'));
+    // The longer key must win: gpt-5-mini is not gpt-5.
+    expect(priceFor('gpt-5-mini')).not.toEqual(priceFor('gpt-5'));
+  });
+
+  it('returns zero rather than guessing for an unpriced model', () => {
+    expect(costKnown('some-unreleased-model')).toBe(false);
+    expect(estimateCost('some-unreleased-model', { inputTokens: 1e6, outputTokens: 1e6 })).toBe(0);
+  });
+
+  it('derives cache hit rate over all input tokens', () => {
+    const metrics = computeMetrics(
+      trace([
+        start,
+        { type: 'model_call', turn: 1, latencyMs: 5, inputTokens: 1000, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.01, toolCalls: [], stopReason: 'stop', contextTokens: 1000 },
+        { type: 'model_call', turn: 2, latencyMs: 5, inputTokens: 200, outputTokens: 50, cacheReadTokens: 1800, cacheWriteTokens: 0, costUsd: 0.004, toolCalls: [], stopReason: 'stop', contextTokens: 2000 },
+        { type: 'run_end', turn: 2, reason: 'finished', ms: 10, editedFiles: [] },
+      ]),
+    );
+
+    expect(metrics.cacheReadTokens).toBe(1800);
+    expect(metrics.cacheHitRate).toBeCloseTo(1800 / 3000, 6);
+    expect(metrics.costUsd).toBeCloseTo(0.014, 6);
+    // totalTokens counts everything actually sent, cached or not.
+    expect(metrics.totalTokens).toBe(3100);
+  });
+});
 
 describe('A/B verdict', () => {
   const baseline = aggregate('base', [fakeRun({ graph: false })]);

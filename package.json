@@ -12,7 +12,7 @@
     "sydes": "tsx src/cli/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json"
   },
   "engines": {
     "node": ">=20"

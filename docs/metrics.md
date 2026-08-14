@@ -4,6 +4,31 @@ Every run writes `trace.jsonl` (raw events) and `metrics.json` (derived numbers)
 directory. `sydes report -a <baseline> -b <candidate>` aggregates both sides and renders the
 comparison.
 
+## Two ways to measure, and when to use each
+
+**`sydes graph-eval` — no model calls, no cost.** The benchmark ships an answer key: `fix_patch`
+names exactly the files a correct change touches. So graph quality can be measured directly,
+without an agent in the loop. For each instance, each gold file in turn plays the foothold the
+agent found, and we ask how much of the *rest* of the gold set the graph reaches:
+
+```bash
+sydes graph-eval --dataset multi-swe-bench.jsonl --limit 200 --lang go
+```
+
+```
+  k   graph recall   precision   directory baseline   lift
+   5          66.7%       21.7%                66.7%      +0%
+  10         100.0%       21.4%                66.7%     +50%
+```
+
+The **directory baseline** — "just look at the other files in the same folder" — is scored on
+every run and is not a strawman: on a small repo it is genuinely competitive, because
+everything is nearby. The graph has to beat it. Instances whose gold patch touches one file,
+or only creates new files, are reported as skipped rather than silently scored as zero.
+
+Use this to iterate on resolution quality in seconds. Use the A/B run below to find out
+whether better structure actually changes what the agent does.
+
 ## The question these numbers answer
 
 > Can structural knowledge make the coding agent reach the correct change surface with less
@@ -33,13 +58,49 @@ A file that grep already listed stays credited to grep no matter how often the g
 it afterwards. Files, not accesses, are counted: reading the same file five times is one
 attribution.
 
+## Cost, and why tokens alone mislead
+
+An agent loop re-sends the whole conversation every turn, so total input ≈ the sum of context
+sizes, and **a token introduced at turn `t` of a `T`-turn run is billed `T − t + 1` times**.
+Measured on this repository, more than half of all input tokens were the static prefix — the
+system prompt and tool schemas — re-sent unchanged on every turn.
+
+That prefix is exactly what prompt caching is for, and cached tokens bill at a fraction of the
+input rate. A metric that counts a cached token and a fresh token as equal is therefore
+actively misleading once caching is on, so `RunMetrics` records them separately:
+
+| Field | Meaning |
+| --- | --- |
+| `inputTokens` | Uncached input, billed at full rate |
+| `cacheReadTokens` | Prefix served from cache, billed at a fraction |
+| `cacheWriteTokens` | Prefix written to cache, billed at a premium |
+| `totalTokens` | Everything actually sent, cached or not |
+| `cacheHitRate` | `cacheRead / all input` |
+| `costUsd` | Priced per model; `costKnown` is false when no rate is configured |
+
+A measured run against `gpt-5-mini` reached a **77% cache hit rate**, cutting cost roughly 59%
+against the same run billed at uncached rates. Prices live in `src/llm/pricing.ts`; override
+them with a JSON file via `SYDES_PRICING` when rates change. An unknown model prices at zero
+and is flagged rather than guessed at.
+
+**Caching and context trimming are in direct opposition.** Trimming rewrites history, which
+changes the cached prefix and invalidates every entry after the edit. Since the re-sent prefix
+is most of the input and cached tokens are cheap, growing context is usually cheaper than
+trimming it — so trimming fires only at `contextTrimCeiling`, takes a large bite when it does,
+and records a `context_trim` event so the assumption stays testable.
+
 ## What the report compares
 
 Headline metrics feed the verdict:
 
 - `resolveRate` — correctness (verified tests, or the official harness's resolved count)
+- `costUsd` — what the run actually cost
 - `modelCalls`, `totalTokens` — model cost
 - `toolCalls`, `uniqueFilesInspected` — exploration
+
+Cost is deliberately **excluded** from the exploration index: it moves with model choice and
+cache behaviour, so folding it in would let a cheaper model look like less exploration. It is
+reported and judged on its own.
 
 The verdict is computed, not written by hand:
 

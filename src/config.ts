@@ -22,8 +22,18 @@ export const AgentConfigSchema = z.object({
   graph: z.boolean().default(true),
   maxTurns: z.number().int().positive().default(40),
   maxTotalTokens: z.number().int().positive().default(400_000),
-  /** Context budget before old tool results get trimmed. */
-  contextTokenBudget: z.number().int().positive().default(120_000),
+  /**
+   * Hard ceiling before old tool results get trimmed.
+   *
+   * Trimming rewrites history in place, which changes the cached prefix and invalidates every
+   * cache entry from that point on. Since the re-sent prefix is ~87% of input and cached
+   * tokens bill at a fraction of the input rate, growing context is usually cheaper than
+   * trimming it. So this is a safety valve against overflowing the window, not a routine
+   * economy measure - and every firing is recorded so the assumption stays testable.
+   */
+  contextTrimCeiling: z.number().int().positive().default(250_000),
+  /** Ask providers to cache the stable prefix. Off only for caching ablations. */
+  promptCache: z.boolean().default(true),
   temperature: z.number().min(0).max(2).default(0),
   maxTokens: z.number().int().positive().default(4096),
   /** Truncation limit for a single file read, in lines. */
@@ -37,6 +47,16 @@ export const AgentConfigSchema = z.object({
    * identically in both arms so it cannot bias the comparison.
    */
   maxNudges: z.number().int().min(0).default(2),
+  /**
+   * Expose the graph as one tool with a `relation` enum instead of six named tools.
+   *
+   * Tool schemas sit in the static prefix, which is re-sent on every turn - six graph tools
+   * measured at ~380 tokens per turn, which on a ten-turn run cost more than the enrichment
+   * they enabled. Collapsing recovers most of that, but models are measurably better at
+   * choosing between distinctly named tools, so this is a flag with a measurement attached,
+   * not a default.
+   */
+  compactGraphTools: z.boolean().default(false),
   enrichment: EnrichmentSchema.default({}),
 });
 

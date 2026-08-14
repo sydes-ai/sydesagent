@@ -8,7 +8,8 @@ import path from 'node:path';
  */
 export type TraceEvent =
   | { type: 'run_start'; runId: string; task: string; repo: string; graph: boolean; provider: string; model: string; ts: number }
-  | { type: 'model_call'; turn: number; latencyMs: number; inputTokens: number; outputTokens: number; toolCalls: string[]; stopReason: string; contextTokens: number }
+  | { type: 'model_call'; turn: number; latencyMs: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUsd: number; toolCalls: string[]; stopReason: string; contextTokens: number }
+  | { type: 'context_trim'; turn: number; beforeTokens: number; afterTokens: number; trimmedResults: number }
   | { type: 'tool_call'; turn: number; name: string; args: Record<string, unknown>; latencyMs: number; ok: boolean; resultBytes: number; note?: string }
   | { type: 'graph_lookup'; turn: number; kind: string; anchor: string; ms: number; results: number; surfaced: string[] }
   | { type: 'suggestion_surfaced'; turn: number; paths: string[]; source: PathSource }

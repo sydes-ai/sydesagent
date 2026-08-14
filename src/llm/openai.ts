@@ -12,7 +12,11 @@ interface OpenAIResponse {
     message: { content: string | null; tool_calls?: OpenAIToolCall[] };
     finish_reason: string;
   }[];
-  usage?: { prompt_tokens: number; completion_tokens: number };
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
 }
 
 function toOpenAIMessages(messages: Message[]): unknown[] {
@@ -102,12 +106,18 @@ export class OpenAIProvider implements LLMProvider {
       arguments: parseArguments(call.function.arguments),
     }));
 
+    // OpenAI caches prefixes over ~1024 tokens automatically and reports the hit here.
+    // `prompt_tokens` includes the cached portion, so subtract it to get the billed remainder.
+    const cached = data.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+    const prompt = data.usage?.prompt_tokens ?? 0;
+
     return {
       text: choice?.message.content ?? '',
       toolCalls,
       usage: {
-        inputTokens: data.usage?.prompt_tokens ?? 0,
+        inputTokens: Math.max(0, prompt - cached),
         outputTokens: data.usage?.completion_tokens ?? 0,
+        cacheReadTokens: cached,
       },
       stopReason: choice?.finish_reason ?? 'stop',
       latencyMs: Date.now() - started,
