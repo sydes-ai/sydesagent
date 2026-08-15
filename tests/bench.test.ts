@@ -75,6 +75,49 @@ describe('dataset', () => {
     expect(await loadDataset([file], { limit: 1 })).toHaveLength(1);
   });
 
+  /**
+   * Real dataset files run past V8's 512MB maximum string length — svelte's is ~480MB — so
+   * reading one whole throws `Invalid string length` before a single record is parsed. The
+   * loader streams instead, and keeps only the fields we use: a record carries the entire
+   * stdout of the reference test runs, which is most of its bytes and is never read.
+   */
+  it('streams records and drops the reference test logs', async () => {
+    const file = path.join(scratch, 'fat.jsonl');
+    const noise = 'x'.repeat(200_000);
+    const rows = Array.from({ length: 20 }, (_, i) =>
+      JSON.stringify({
+        ...instance(),
+        number: i + 1,
+        run_result: noise,
+        fix_patch_result: noise,
+        test_patch_result: noise,
+        p2p_tests: [noise],
+      }),
+    );
+    await writeFile(file, rows.join('\n') + '\n');
+
+    const loaded = await loadDataset([file]);
+    expect(loaded).toHaveLength(20);
+    expect(loaded[0].fix_patch).toBe('THIS MUST NOT REACH THE AGENT');
+
+    // The megabytes of log never enter memory.
+    const kept = loaded[0] as unknown as Record<string, unknown>;
+    for (const dropped of ['run_result', 'fix_patch_result', 'test_patch_result', 'p2p_tests']) {
+      expect(kept[dropped], `${dropped} should be dropped`).toBeUndefined();
+    }
+    const retained = JSON.stringify(loaded).length;
+    const onDisk = rows.join('\n').length;
+    expect(retained).toBeLessThan(onDisk / 10);
+  });
+
+  it('stops reading once the limit is reached', async () => {
+    const file = path.join(scratch, 'many.jsonl');
+    const rows = Array.from({ length: 50 }, (_, i) => JSON.stringify({ ...instance(), number: i + 1 }));
+    await writeFile(file, rows.join('\n') + '\n');
+
+    expect(await loadDataset([file], { limit: 3 })).toHaveLength(3);
+  });
+
   /** The reference patches are the answer key; leaking them would invalidate every result. */
   it('builds the task from the issue text only, never the patches', () => {
     const text = taskText(instance());

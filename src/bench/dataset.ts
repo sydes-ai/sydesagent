@@ -5,7 +5,8 @@
  * resolved_issues, fix_patch, test_patch. `fix_patch` and `test_patch` are the answer key and
  * must never reach the agent - only the issue text does.
  */
-import { readFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 
 export interface ResolvedIssue {
   number: number;
@@ -69,6 +70,31 @@ function matches(instance: BenchInstance, filter: DatasetFilter): boolean {
   return true;
 }
 
+/**
+ * Keeps the fields we use and drops the rest.
+ *
+ * A dataset record carries the full stdout of the reference test runs — `run_result`,
+ * `fix_patch_result`, `test_patch_result` — which is the overwhelming majority of its bytes
+ * and is never read by anything here. Holding 800 of those in memory is gigabytes for
+ * nothing.
+ */
+function project(raw: Record<string, unknown>): BenchInstance {
+  return {
+    org: raw.org as string,
+    repo: raw.repo as string,
+    number: raw.number as number,
+    base: raw.base as BenchInstance['base'],
+    title: raw.title as string,
+    body: raw.body as string,
+    resolved_issues: raw.resolved_issues as ResolvedIssue[],
+    fix_patch: raw.fix_patch as string,
+    test_patch: raw.test_patch as string,
+    lang: raw.lang as string,
+    hints: raw.hints as string,
+    repo_url: raw.repo_url as string,
+  };
+}
+
 export async function loadDataset(
   files: string[],
   filter: DatasetFilter = {},
@@ -77,13 +103,20 @@ export async function loadDataset(
   let malformed = 0;
 
   for (const file of files) {
-    const raw = await readFile(file, 'utf8');
-    for (const line of raw.split('\n')) {
+    // Streamed line by line rather than read whole. These files run past V8's 512MB maximum
+    // string length — svelte's is ~480MB and climbing — so `readFile(file, 'utf8')` throws
+    // `Invalid string length` before a single record is parsed.
+    const reader = createInterface({
+      input: createReadStream(file, 'utf8'),
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of reader) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       let instance: BenchInstance;
       try {
-        instance = JSON.parse(trimmed) as BenchInstance;
+        instance = project(JSON.parse(trimmed) as Record<string, unknown>);
       } catch {
         // These files run to hundreds of megabytes and a truncated download leaves one bad
         // line. Refusing to start over a single unparseable record helps nobody; skip it and
@@ -96,7 +129,10 @@ export async function loadDataset(
       }
       if (!matches(instance, filter)) continue;
       out.push(instance);
-      if (filter.limit && out.length >= filter.limit) return out;
+      if (filter.limit && out.length >= filter.limit) {
+        reader.close();
+        return out;
+      }
     }
   }
   if (malformed) {
