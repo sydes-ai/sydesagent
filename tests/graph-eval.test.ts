@@ -121,7 +121,12 @@ describe('leave-one-out ablation', () => {
   it('loses exactly what the removed signal uniquely contributed', () => {
     const anchor = 'src/a.ts';
     const fileGraph: FileGraph = {
-      structural: new Map([[anchor, new Map([['far/deep/only-graph-knows.ts', 3]])]]),
+      forward: new Map([[anchor, new Map([['far/deep/only-graph-knows.ts', 1]])]]),
+      backward: new Map([['far/deep/only-graph-knows.ts', new Map([[anchor, 1]])]]),
+      degree: new Map([
+        [anchor, 1],
+        ['far/deep/only-graph-knows.ts', 1],
+      ]),
       packageMates: new Map([[anchor, ['src/sibling.ts']]]),
     };
     const ctx = {

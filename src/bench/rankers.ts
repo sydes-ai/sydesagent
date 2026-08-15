@@ -9,7 +9,7 @@
  */
 import path from 'node:path';
 import { coChangeNeighbours } from '../graph/cochange.js';
-import { CONFIDENCE_RANK, type GraphEdge } from '../graph/model.js';
+import { CONFIDENCE_FACTOR, PROPAGATION, type GraphEdge } from '../graph/model.js';
 import type { GraphStore } from '../graph/store.js';
 
 /**
@@ -24,26 +24,32 @@ import type { GraphStore } from '../graph/store.js';
  */
 export type Strategy =
   | 'graph'
+  | 'graph-bfs'
+  | 'dependents'
   | 'directory'
   | 'cochange'
   | 'packages'
   | 'combined'
   | 'no-graph'
+  | 'no-dependents'
   | 'no-directory'
   | 'no-cochange'
   | 'no-packages';
 
 /** The components fused by `combined`, in the order their rankings are passed to RRF. */
-export const COMPONENTS = ['graph', 'packages', 'cochange', 'directory'] as const;
+export const COMPONENTS = ['graph', 'dependents', 'packages', 'cochange', 'directory'] as const;
 export type Component = (typeof COMPONENTS)[number];
 
 export const STRATEGIES: Strategy[] = [
   'graph',
+  'graph-bfs',
+  'dependents',
   'directory',
   'cochange',
   'packages',
   'combined',
   'no-graph',
+  'no-dependents',
   'no-directory',
   'no-cochange',
   'no-packages',
@@ -51,7 +57,15 @@ export const STRATEGIES: Strategy[] = [
 
 /** File-level adjacency derived from symbol-level edges, plus package membership. */
 export interface FileGraph {
-  structural: Map<string, Map<string, number>>;
+  /** u -> what u depends on. Following it answers "what does this code use?". */
+  forward: Map<string, Map<string, number>>;
+  /**
+   * u -> what depends on u. Change propagates mostly along here: move a signature and the
+   * callers break, not the callees. Keeping only an undirected view threw that away.
+   */
+  backward: Map<string, Map<string, number>>;
+  /** Total degree per file, for damping hubs. */
+  degree: Map<string, number>;
   /** Files sharing a package (Go) or a directory (everything else). */
   packageMates: Map<string, string[]>;
 }
@@ -64,23 +78,28 @@ export interface FileGraph {
  * scoping rule is the fix — not adopting the heuristic.
  */
 export function buildFileGraph(store: GraphStore): FileGraph {
-  const structural = new Map<string, Map<string, number>>();
-  const link = (from: string, to: string, weight: number) => {
-    if (from === to) return;
-    let row = structural.get(from);
-    if (!row) structural.set(from, (row = new Map()));
-    row.set(to, Math.max(row.get(to) ?? 0, weight));
+  const forward = new Map<string, Map<string, number>>();
+  const backward = new Map<string, Map<string, number>>();
+  const degree = new Map<string, number>();
+
+  const link = (into: Map<string, Map<string, number>>, from: string, to: string, w: number) => {
+    let row = into.get(from);
+    if (!row) into.set(from, (row = new Map()));
+    row.set(to, Math.max(row.get(to) ?? 0, w));
   };
 
   for (const edge of store.edges.values() as Iterable<GraphEdge>) {
     const from = store.nodes.get(edge.from);
     const to = store.nodes.get(edge.to);
-    if (!from || !to) continue;
-    const weight = CONFIDENCE_RANK[edge.confidence];
-    // Undirected: a caller and a callee are equally likely to co-change.
-    link(from.file, to.file, weight);
-    link(to.file, from.file, weight);
+    if (!from || !to || from.file === to.file) continue;
+    // Propagation strength, discounted by how sure we are the edge exists at all.
+    const weight = PROPAGATION[edge.kind] * CONFIDENCE_FACTOR[edge.confidence];
+    link(forward, from.file, to.file, weight);
+    link(backward, to.file, from.file, weight);
   }
+
+  for (const [file, row] of forward) degree.set(file, (degree.get(file) ?? 0) + row.size);
+  for (const [file, row] of backward) degree.set(file, (degree.get(file) ?? 0) + row.size);
 
   const byPackage = new Map<string, string[]>();
   const push = (key: string, file: string) => {
@@ -106,11 +125,120 @@ export function buildFileGraph(store: GraphStore): FileGraph {
     for (const file of files) packageMates.set(file, files.filter((f) => f !== file));
   }
 
-  return { structural, packageMates };
+  return { forward, backward, degree, packageMates };
 }
 
-/** Breadth-first over structural edges, nearest and most-confident first. */
-export function graphRanked(fileGraph: FileGraph, anchor: string, limit: number): string[] {
+/**
+ * Personalized PageRank, replacing breadth-first traversal.
+ *
+ * BFS was not ranking so much as ordering by hop, and code graphs are scale-free: from any
+ * anchor the first hop reaches a hub, the second fans out to hundreds of files carrying
+ * identical weights, and the tie-break that then decided the whole result was
+ * `localeCompare` — filename alphabetical order, which is noise. That is the most likely
+ * reason structural recall@5 (16.4%) trailed recall@20 (35.1%) so badly: the right files were
+ * in the set and arbitrarily placed within it. A random walk with restart scores by how often
+ * a walker starting at the anchor lands on a file, which is continuous, ties almost nothing,
+ * and counts many weak paths as evidence where BFS counted only the shortest.
+ *
+ * Each step is damped by the destination's degree, so an edge into a file that everything
+ * touches carries little. This is the structural counterpart of scoring history by lift rather
+ * than by raw co-occurrence — normalising by how popular the destination is on its own. Doing
+ * that for history and not for structure was an inconsistency, not a design choice.
+ *
+ * Implemented as a sparse push: mass decays by `1 - restart` each sweep, so it is bounded by
+ * the frontier rather than by repository size, and the tail is truncated once the remaining
+ * mass cannot change the ordering.
+ */
+export function personalizedPageRank(
+  adjacency: Map<string, Map<string, number>>[],
+  degree: Map<string, number>,
+  anchor: string,
+  { restart = 0.15, sweeps = 12, epsilon = 1e-6 } = {},
+): Map<string, number> {
+  const score = new Map<string, number>();
+  let mass = new Map<string, number>([[anchor, 1]]);
+
+  for (let sweep = 0; sweep < sweeps && mass.size; sweep++) {
+    const next = new Map<string, number>();
+    for (const [file, m] of mass) {
+      // Weights are gathered across the directions this walk is allowed to use, so a file
+      // reachable both ways is not counted twice at different strengths.
+      const row = new Map<string, number>();
+      for (const adj of adjacency) {
+        for (const [to, w] of adj.get(file) ?? []) {
+          row.set(to, Math.max(row.get(to) ?? 0, w));
+        }
+      }
+      if (!row.size) continue;
+
+      let total = 0;
+      const damped = new Map<string, number>();
+      for (const [to, w] of row) {
+        const d = w / Math.log1p(1 + (degree.get(to) ?? 0));
+        damped.set(to, d);
+        total += d;
+      }
+      if (total <= 0) continue;
+
+      const share = (1 - restart) * m;
+      for (const [to, d] of damped) {
+        next.set(to, (next.get(to) ?? 0) + (share * d) / total);
+      }
+    }
+
+    // Every visit counts toward the score, but only walkers still carrying meaningful mass go
+    // on. Without this the frontier reaches the whole repository after a few sweeps and the
+    // cost becomes proportional to repository size for contributions far below the gap between
+    // adjacent scores. Truncating the tail bounds the walk instead.
+    mass = new Map();
+    for (const [file, m] of next) {
+      score.set(file, (score.get(file) ?? 0) + m);
+      if (m >= epsilon) mass.set(file, m);
+    }
+  }
+
+  score.delete(anchor);
+  return score;
+}
+
+function byScore(score: Map<string, number>, limit: number): string[] {
+  return [...score.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([file]) => file);
+}
+
+/** Structural proximity in both directions: what the anchor uses and what uses the anchor. */
+export function graphRankedPPR(fileGraph: FileGraph, anchor: string, limit: number): string[] {
+  const score = personalizedPageRank(
+    [fileGraph.forward, fileGraph.backward],
+    fileGraph.degree,
+    anchor,
+  );
+  return byScore(score, limit);
+}
+
+/**
+ * Dependents only: files that would break if the anchor's surface changed.
+ *
+ * Scored separately from the bidirectional walk because the two answer different questions,
+ * and the aggregate cannot show whether direction carries information if direction is
+ * averaged away before it is measured.
+ */
+export function dependentsRanked(fileGraph: FileGraph, anchor: string, limit: number): string[] {
+  return byScore(
+    personalizedPageRank([fileGraph.backward], fileGraph.degree, anchor),
+    limit,
+  );
+}
+
+/**
+ * The previous ranker: breadth-first, nearest and heaviest first.
+ *
+ * Retained and scored so that replacing it with a random walk is a measured claim rather than
+ * an assumed improvement. If this row wins, the walk goes.
+ */
+export function graphRankedBFS(fileGraph: FileGraph, anchor: string, limit: number): string[] {
   const seen = new Set<string>([anchor]);
   const out: string[] = [];
   let frontier: string[] = [anchor];
@@ -118,8 +246,10 @@ export function graphRanked(fileGraph: FileGraph, anchor: string, limit: number)
   for (let hop = 0; hop < 3 && out.length < limit; hop++) {
     const next: { file: string; weight: number }[] = [];
     for (const file of frontier) {
-      for (const [neighbour, weight] of fileGraph.structural.get(file) ?? []) {
-        if (!seen.has(neighbour)) next.push({ file: neighbour, weight });
+      for (const adj of [fileGraph.forward, fileGraph.backward]) {
+        for (const [neighbour, weight] of adj.get(file) ?? []) {
+          if (!seen.has(neighbour)) next.push({ file: neighbour, weight });
+        }
       }
     }
     next.sort((a, b) => b.weight - a.weight || a.file.localeCompare(b.file));
@@ -144,10 +274,12 @@ export function graphClosure(fileGraph: FileGraph, anchor: string, maxHops = 5):
   for (let hop = 0; hop < maxHops && frontier.length; hop++) {
     const next: string[] = [];
     for (const file of frontier) {
-      for (const neighbour of fileGraph.structural.get(file)?.keys() ?? []) {
-        if (!seen.has(neighbour)) {
-          seen.add(neighbour);
-          next.push(neighbour);
+      for (const adj of [fileGraph.forward, fileGraph.backward]) {
+        for (const neighbour of adj.get(file)?.keys() ?? []) {
+          if (!seen.has(neighbour)) {
+            seen.add(neighbour);
+            next.push(neighbour);
+          }
         }
       }
     }
@@ -223,7 +355,8 @@ export function rankAll(
   limit: number,
 ): Record<Strategy, string[]> {
   const parts: Record<Component, string[]> = {
-    graph: graphRanked(ctx.fileGraph, anchor, limit),
+    graph: graphRankedPPR(ctx.fileGraph, anchor, limit),
+    dependents: dependentsRanked(ctx.fileGraph, anchor, limit),
     // On Go these are the signal the call graph structurally cannot see: one package is one
     // directory, so its files share a namespace whether or not either calls the other.
     packages: (ctx.fileGraph.packageMates.get(anchor) ?? []).slice(0, limit),
@@ -239,11 +372,14 @@ export function rankAll(
 
   return {
     graph: parts.graph,
+    'graph-bfs': graphRankedBFS(ctx.fileGraph, anchor, limit),
+    dependents: parts.dependents,
     directory: parts.directory,
     cochange: parts.cochange,
     packages: parts.packages,
     combined: fuse(COMPONENTS.map((c) => parts[c]), limit),
     'no-graph': without('graph'),
+    'no-dependents': without('dependents'),
     'no-directory': without('directory'),
     'no-cochange': without('cochange'),
     'no-packages': without('packages'),

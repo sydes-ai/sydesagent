@@ -43,6 +43,37 @@ export const CONFIDENCE_RANK: Record<Confidence, number> = {
   heuristic: 1,
 };
 
+/**
+ * How strongly a change propagates along each edge kind.
+ *
+ * This is a different question from `CONFIDENCE_RANK`, and using that one for both was a
+ * mistake worth naming. Confidence asks "is this edge real?" — a resolver's uncertainty about
+ * whether `foo()` means the `foo` we think. Propagation asks "if the far end changes, must
+ * this end change too?" A perfectly resolved call into a logging helper is `exact` and
+ * propagates almost nothing; a `likely` edge into a shared interface propagates hard. Ranking
+ * needs the second quantity and was reading the first.
+ *
+ * The ordering is the one the type system dictates. Adding a method to an interface breaks
+ * every implementer — the compiler will say so. A test names the symbol it covers, so it
+ * follows that symbol's signature. Imports bind a module's exported surface. A call breaks
+ * only when arity or types move. A bare name in a body usually survives untouched.
+ */
+export const PROPAGATION: Record<EdgeKind, number> = {
+  implements: 1,
+  tests: 0.8,
+  contains: 0.6,
+  imports: 0.5,
+  calls: 0.4,
+  references: 0.25,
+};
+
+/** Uncertainty as a discount on propagation, rather than a substitute for it. */
+export const CONFIDENCE_FACTOR: Record<Confidence, number> = {
+  exact: 1,
+  likely: 0.7,
+  heuristic: 0.4,
+};
+
 export interface GraphNode {
   id: string;
   kind: NodeKind;
