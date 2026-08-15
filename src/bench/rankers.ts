@@ -12,8 +12,42 @@ import { coChangeNeighbours } from '../graph/cochange.js';
 import { CONFIDENCE_RANK, type GraphEdge } from '../graph/model.js';
 import type { GraphStore } from '../graph/store.js';
 
-export type Strategy = 'graph' | 'directory' | 'cochange' | 'combined';
-export const STRATEGIES: Strategy[] = ['graph', 'directory', 'cochange', 'combined'];
+/**
+ * The four base signals, their fusion, and the fusion with each signal removed.
+ *
+ * The leave-one-out variants exist because the first full run made the question unavoidable:
+ * the fusion nearly doubled the directory baseline, but the structural graph on its own barely
+ * beat it (9.5% against 8.2% at recall@|G|). A signal that is weak alone can still be decisive
+ * in combination, or it can be dead weight the other three carry — and the aggregate cannot
+ * tell those apart. `no-graph` scoring the same as `combined` would mean this project's central
+ * claim is false and the real result is "git history plus directory structure".
+ */
+export type Strategy =
+  | 'graph'
+  | 'directory'
+  | 'cochange'
+  | 'packages'
+  | 'combined'
+  | 'no-graph'
+  | 'no-directory'
+  | 'no-cochange'
+  | 'no-packages';
+
+/** The components fused by `combined`, in the order their rankings are passed to RRF. */
+export const COMPONENTS = ['graph', 'packages', 'cochange', 'directory'] as const;
+export type Component = (typeof COMPONENTS)[number];
+
+export const STRATEGIES: Strategy[] = [
+  'graph',
+  'directory',
+  'cochange',
+  'packages',
+  'combined',
+  'no-graph',
+  'no-directory',
+  'no-cochange',
+  'no-packages',
+];
 
 /** File-level adjacency derived from symbol-level edges, plus package membership. */
 export interface FileGraph {
@@ -166,25 +200,43 @@ export interface RankContext {
   allFiles: string[];
 }
 
-export function rank(strategy: Strategy, ctx: RankContext, anchor: string, limit: number): string[] {
-  switch (strategy) {
-    case 'graph':
-      return graphRanked(ctx.fileGraph, anchor, limit);
-    case 'directory':
-      return directoryRanked(ctx.allFiles, anchor, limit);
-    case 'cochange':
-      return coChangeRanked(ctx.store, anchor, limit);
-    case 'combined':
-      // Package mates are folded in as their own ranking: on Go they are the signal the call
-      // graph structurally cannot see.
-      return fuse(
-        [
-          graphRanked(ctx.fileGraph, anchor, limit),
-          (ctx.fileGraph.packageMates.get(anchor) ?? []).slice(0, limit),
-          coChangeRanked(ctx.store, anchor, limit),
-          directoryRanked(ctx.allFiles, anchor, limit),
-        ],
-        limit,
-      );
-  }
+/**
+ * Every strategy for one anchor, with each base signal computed exactly once.
+ *
+ * Nine strategies over four signals would otherwise recompute the same rankings five times per
+ * anchor, and `directoryRanked` alone is O(files in repo). Since the fusion variants are pure
+ * functions of the base rankings, computing the components up front makes the ablation
+ * essentially free rather than a multiple of the run it is auditing.
+ */
+export function rankAll(
+  ctx: RankContext,
+  anchor: string,
+  limit: number,
+): Record<Strategy, string[]> {
+  const parts: Record<Component, string[]> = {
+    graph: graphRanked(ctx.fileGraph, anchor, limit),
+    // On Go these are the signal the call graph structurally cannot see: one package is one
+    // directory, so its files share a namespace whether or not either calls the other.
+    packages: (ctx.fileGraph.packageMates.get(anchor) ?? []).slice(0, limit),
+    cochange: coChangeRanked(ctx.store, anchor, limit),
+    directory: directoryRanked(ctx.allFiles, anchor, limit),
+  };
+
+  const without = (dropped: Component) =>
+    fuse(
+      COMPONENTS.filter((c) => c !== dropped).map((c) => parts[c]),
+      limit,
+    );
+
+  return {
+    graph: parts.graph,
+    directory: parts.directory,
+    cochange: parts.cochange,
+    packages: parts.packages,
+    combined: fuse(COMPONENTS.map((c) => parts[c]), limit),
+    'no-graph': without('graph'),
+    'no-directory': without('directory'),
+    'no-cochange': without('cochange'),
+    'no-packages': without('packages'),
+  };
 }

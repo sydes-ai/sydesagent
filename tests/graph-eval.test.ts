@@ -4,7 +4,8 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { BenchInstance } from '../src/bench/dataset.js';
 import { DEFAULT_K, evaluateInstance, summarise, type InstanceEval } from '../src/bench/graph-eval.js';
-import { STRATEGIES } from '../src/bench/rankers.js';
+import { rankAll, STRATEGIES, type FileGraph, type RankContext } from '../src/bench/rankers.js';
+import { EMPTY_COCHANGE } from '../src/graph/cochange.js';
 
 import { changedFiles, parsePatchFiles } from '../src/bench/patch.js';
 import { LocalExec } from '../src/exec/local.js';
@@ -108,6 +109,49 @@ function diffFor(files: string[]): string {
     .map((file) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-a\n+b`)
     .join('\n');
 }
+
+describe('leave-one-out ablation', () => {
+  /**
+   * The whole point of the ablation is that dropping a signal from the fusion must drop what
+   * only that signal knew. Here the graph is the sole route to the target. It has to be nested
+   * that deep: the directory baseline scores sibling *top-level* directories as nearby, so a
+   * plain `far/thing.ts` is one it reaches unaided. If `no-graph` still surfaced the file, the
+   * ablation would be measuring nothing and a null result would be unreadable.
+   */
+  it('loses exactly what the removed signal uniquely contributed', () => {
+    const anchor = 'src/a.ts';
+    const fileGraph: FileGraph = {
+      structural: new Map([[anchor, new Map([['far/deep/only-graph-knows.ts', 3]])]]),
+      packageMates: new Map([[anchor, ['src/sibling.ts']]]),
+    };
+    const ctx = {
+      store: { coChange: EMPTY_COCHANGE },
+      fileGraph,
+      allFiles: [anchor, 'src/sibling.ts', 'far/deep/only-graph-knows.ts'],
+    } as unknown as RankContext;
+
+    const ranked = rankAll(ctx, anchor, 10);
+
+    expect(ranked.graph).toEqual(['far/deep/only-graph-knows.ts']);
+    expect(ranked.combined).toContain('far/deep/only-graph-knows.ts');
+    expect(ranked['no-graph']).not.toContain('far/deep/only-graph-knows.ts');
+
+    // And removing a signal must not disturb what the others independently found.
+    expect(ranked['no-graph']).toContain('src/sibling.ts');
+    expect(ranked.combined).toContain('src/sibling.ts');
+  });
+
+  it('reports every strategy, so a missing one cannot silently read as zero', async () => {
+    const gold = ['pkg/handler/pokedex.go', 'service/pokemon.go', 'helpers/helpers.go'];
+    const result = await evaluateInstance(instance(diffFor(gold)), {
+      workdir: path.join(scratch, 'work'),
+    });
+    for (const strategy of STRATEGIES) {
+      expect(result.recallAtG[strategy]).toBeGreaterThanOrEqual(0);
+      expect(result.recall[strategy][10]).toBeLessThanOrEqual(1);
+    }
+  }, 120_000);
+});
 
 describe('change-surface recall', () => {
   /**

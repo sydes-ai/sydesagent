@@ -19,7 +19,7 @@ import type { GraphStore } from '../graph/store.js';
 import { changedFiles } from './patch.js';
 import { instanceId, type BenchInstance } from './dataset.js';
 import { prepareWorkspace } from './workspace.js';
-import { buildFileGraph, graphClosure, rank, STRATEGIES, type Strategy } from './rankers.js';
+import { buildFileGraph, graphClosure, rankAll, STRATEGIES, type Strategy } from './rankers.js';
 
 export const DEFAULT_K = [5, 10, 20];
 
@@ -144,8 +144,9 @@ export async function evaluateInstance(
     closureRecall += [...targets].filter((f) => closure.has(f)).length / targets.size;
     closureShare += closure.size / Math.max(1, allFiles.length);
 
+    const ranked_ = rankAll(ctx, anchor, Math.max(limit, targets.size));
     for (const strategy of STRATEGIES) {
-      const ranked = rank(strategy, ctx, anchor, Math.max(limit, targets.size));
+      const ranked = ranked_[strategy];
       for (const k of ks) {
         const top = ranked.slice(0, k);
         const hits = top.filter((file) => targets.has(file)).length;
@@ -189,6 +190,8 @@ export interface EvalSummary {
   recallAtG: Record<Strategy, number>;
   /** Instances where a strategy strictly beats the directory baseline at k = |targets|. */
   wins: Record<Strategy, number>;
+  /** And where it strictly loses. The remainder are ties, usually both scoring zero. */
+  losses: Record<Strategy, number>;
   closureRecall: number;
   closureShare: number;
   missReasons: Record<string, number>;
@@ -203,6 +206,7 @@ export function summarise(results: InstanceEval[], ks: number[] = DEFAULT_K): Ev
   const precision = zeroPerStrategy(() => Object.fromEntries(ks.map((k) => [k, 0])) as Record<number, number>);
   const recallAtG = zeroPerStrategy(() => 0);
   const wins = zeroPerStrategy(() => 0);
+  const losses = zeroPerStrategy(() => 0);
 
   for (const result of scored) {
     for (const strategy of STRATEGIES) {
@@ -212,6 +216,7 @@ export function summarise(results: InstanceEval[], ks: number[] = DEFAULT_K): Ev
       }
       recallAtG[strategy] += result.recallAtG[strategy] / n;
       if (result.recallAtG[strategy] > result.recallAtG.directory) wins[strategy] += 1;
+      else if (result.recallAtG[strategy] < result.recallAtG.directory) losses[strategy] += 1;
     }
   }
 
@@ -231,6 +236,7 @@ export function summarise(results: InstanceEval[], ks: number[] = DEFAULT_K): Ev
     precision,
     recallAtG,
     wins,
+    losses,
     closureRecall: scored.reduce((sum, r) => sum + r.closureRecall, 0) / n,
     closureShare: scored.reduce((sum, r) => sum + r.closureShare, 0) / n,
     missReasons,
@@ -245,11 +251,36 @@ export function renderEvalSummary(summary: EvalSummary): string {
 
   lines.push(`Change-surface recall over ${n} scored instance(s) of ${summary.instances}`);
   lines.push('');
-  lines.push(`  ${'strategy'.padEnd(11)}${summary.k.map((k) => `recall@${k}`.padStart(11)).join('')}${'recall@|G|'.padStart(12)}${'beats dir'.padStart(11)}`);
-  for (const strategy of STRATEGIES) {
+  lines.push(`  ${'strategy'.padEnd(13)}${summary.k.map((k) => `recall@${k}`.padStart(11)).join('')}${'recall@|G|'.padStart(12)}${'W/L vs dir'.padStart(13)}`);
+
+  const row = (strategy: Strategy) => {
     const cols = summary.k.map((k) => pct(summary.recall[strategy][k]).padStart(11)).join('');
-    const wins = strategy === 'directory' ? '—' : `${summary.wins[strategy]}/${n}`;
-    lines.push(`  ${strategy.padEnd(11)}${cols}${pct(summary.recallAtG[strategy]).padStart(12)}${wins.padStart(11)}`);
+    const record =
+      strategy === 'directory' ? '—' : `${summary.wins[strategy]}/${summary.losses[strategy]}`;
+    lines.push(
+      `  ${strategy.padEnd(13)}${cols}${pct(summary.recallAtG[strategy]).padStart(12)}${record.padStart(13)}`,
+    );
+  };
+
+  for (const strategy of STRATEGIES) {
+    if (strategy.startsWith('no-')) continue;
+    row(strategy);
+  }
+
+  // The ablation. Read down this column, not across: how far the fusion falls when one signal
+  // is removed is the only direct evidence that the signal contributes anything at all.
+  lines.push('');
+  lines.push('  Ablation — fusion with one signal removed:');
+  for (const strategy of STRATEGIES) {
+    if (!strategy.startsWith('no-')) continue;
+    row(strategy);
+    const drop = summary.recallAtG.combined - summary.recallAtG[strategy];
+    const share = summary.recallAtG.combined ? drop / summary.recallAtG.combined : 0;
+    const verdict =
+      drop <= 0
+        ? 'removing it does not hurt — the signal is carried by the others'
+        : `${pct(share)} of the fused result depends on it`;
+    lines.push(`  ${' '.repeat(13)}${verdict}`);
   }
 
   lines.push('');
