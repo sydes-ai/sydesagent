@@ -14,8 +14,6 @@
 import { statSync } from 'node:fs';
 import path from 'node:path';
 import { indexRepo } from '../graph/indexer.js';
-import { adapterFor } from '../graph/lang/registry.js';
-import type { GraphStore } from '../graph/store.js';
 import { changedFiles } from './patch.js';
 import { instanceId, type BenchInstance } from './dataset.js';
 import { prepareWorkspace } from './workspace.js';
@@ -23,13 +21,14 @@ import { buildFileGraph, graphClosure, rankAll, STRATEGIES, type Strategy } from
 
 export const DEFAULT_K = [5, 10, 20];
 
-/** Why a gold file never made it into the graph. Only the last three are our problem. */
-export type MissReason =
-  | 'created-by-patch'
-  | 'no-adapter'
-  | 'excluded-by-lister'
-  | 'too-large'
-  | 'parse-error';
+/**
+ * Why a gold file is absent from the repository's file list. Only the last two are our problem.
+ *
+ * `no-adapter` and `parse-error` used to appear here, when the answer key was restricted to
+ * parseable files. They are no longer misses: an unparsed file is still a tracked file, still
+ * a legitimate target, and still reachable by history or locality — it simply has no symbols.
+ */
+export type MissReason = 'created-by-patch' | 'excluded-by-lister' | 'too-large';
 
 export interface InstanceEval {
   instanceId: string;
@@ -47,6 +46,8 @@ export interface InstanceEval {
   closureRecall: number;
   /** Closure size as a fraction of the repository - a closure of everything proves nothing. */
   closureShare: number;
+  /** Fraction of gold files with no symbols, which structure can never reach. */
+  unparsedShare: number;
   skipped?: string;
 }
 
@@ -58,8 +59,8 @@ export interface EvalOptions {
   reuse?: boolean;
 }
 
-/** Distinguishes a file the patch creates from one we failed to index. */
-function classifyMiss(store: GraphStore, root: string, file: string): MissReason {
+/** Distinguishes a file the patch creates from one the lister should have returned. */
+function classifyMiss(root: string, file: string): MissReason {
   let size: number | undefined;
   try {
     const info = statSync(path.join(root, file));
@@ -68,8 +69,6 @@ function classifyMiss(store: GraphStore, root: string, file: string): MissReason
     return 'created-by-patch';
   }
   if (size === undefined) return 'created-by-patch';
-  if (store.parseFailures.has(file)) return 'parse-error';
-  if (!adapterFor(file, { allowDeclarations: true })) return 'no-adapter';
   if (size > 1_500_000) return 'too-large';
   return 'excluded-by-lister';
 }
@@ -99,6 +98,7 @@ export async function evaluateInstance(
     recallAtG: zeroPerStrategy(() => 0),
     closureRecall: 0,
     closureShare: 0,
+    unparsedShare: 0,
   };
 
   if (gold.length < 2) {
@@ -110,12 +110,22 @@ export async function evaluateInstance(
     fresh: !options.reuse,
   });
   const store = await indexRepo(workspace.root);
-  const indexed = new Set(store.files());
+  // Every tracked file, not every parseable one.
+  //
+  // Scoring against parsed files only was measuring the wrong thing. A third of all gold files
+  // the graph could not reach were `.json`, another sixth `.md`, plus `go.mod`, `go.sum` and
+  // the `.d.ts` files that carry a library's public API — and none of them entered the answer
+  // key at all. That silently redefined "the change surface" as "the part of the change
+  // surface a parser understands", which is precisely the part structure was always going to
+  // do best on. These files have no symbols and so can never appear in the structural graph;
+  // they are reachable only by history or by locality, so excluding them subtracted most of
+  // what co-change was added to find.
+  const indexed = store.knownFiles;
   const indexableGold = gold.filter((file) => indexed.has(file));
 
   const misses: Record<string, MissReason> = {};
   for (const file of gold) {
-    if (!indexed.has(file)) misses[file] = classifyMiss(store, workspace.root, file);
+    if (!indexed.has(file)) misses[file] = classifyMiss(workspace.root, file);
   }
 
   if (indexableGold.length < 2) {
@@ -128,8 +138,13 @@ export async function evaluateInstance(
   }
 
   const fileGraph = buildFileGraph(store);
-  const allFiles = store.files();
+  const allFiles = [...store.knownFiles];
   const ctx = { store, fileGraph, allFiles };
+
+  // The share of targets with no symbols at all. This is a hard ceiling on the structural
+  // strategy — not a defect in it — and reporting recall without it invites reading the
+  // graph's shortfall as a modelling failure when part of it is arithmetic.
+  const unparsed = indexableGold.filter((file) => !store.facts.has(file)).length;
 
   const recall = zeroPerStrategy(emptyK);
   const precision = zeroPerStrategy(emptyK);
@@ -177,6 +192,7 @@ export async function evaluateInstance(
     recallAtG,
     closureRecall: closureRecall / anchors,
     closureShare: closureShare / anchors,
+    unparsedShare: unparsed / anchors,
   };
 }
 
@@ -194,6 +210,8 @@ export interface EvalSummary {
   losses: Record<Strategy, number>;
   closureRecall: number;
   closureShare: number;
+  /** Share of gold files with no symbols — the ceiling on any structural strategy. */
+  unparsedShare: number;
   missReasons: Record<string, number>;
   perInstance: InstanceEval[];
 }
@@ -239,6 +257,7 @@ export function summarise(results: InstanceEval[], ks: number[] = DEFAULT_K): Ev
     losses,
     closureRecall: scored.reduce((sum, r) => sum + r.closureRecall, 0) / n,
     closureShare: scored.reduce((sum, r) => sum + r.closureShare, 0) / n,
+    unparsedShare: scored.reduce((sum, r) => sum + r.unparsedShare, 0) / n,
     missReasons,
     perInstance: results,
   };
@@ -287,12 +306,18 @@ export function renderEvalSummary(summary: EvalSummary): string {
   lines.push(`Soundness: the structural closure contains ${pct(summary.closureRecall)} of the target`);
   lines.push(`files, while spanning ${pct(summary.closureShare)} of the repository. A closure that`);
   lines.push('reaches everything proves nothing — read the two together.');
+  lines.push('');
+  lines.push(
+    `${pct(summary.unparsedShare)} of gold files have no symbols at all — JSON, markdown, ` +
+      `go.mod and\nthe like. Structure can never reach those, so that share is a ceiling on ` +
+      `the graph\nstrategy rather than a shortfall in it.`,
+  );
 
   if (Object.keys(summary.missReasons).length) {
     lines.push('');
     lines.push('Gold files not in the graph:');
     for (const [reason, count] of Object.entries(summary.missReasons).sort((a, b) => b[1] - a[1])) {
-      const ours = reason === 'parse-error' || reason === 'excluded-by-lister' || reason === 'too-large';
+      const ours = reason !== 'created-by-patch';
       lines.push(`  ${reason.padEnd(20)} ${String(count).padStart(5)}${ours ? '   <- ours to fix' : ''}`);
     }
   }

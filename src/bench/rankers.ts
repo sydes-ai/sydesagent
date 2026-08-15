@@ -83,13 +83,22 @@ export function buildFileGraph(store: GraphStore): FileGraph {
   }
 
   const byPackage = new Map<string, string[]>();
+  const push = (key: string, file: string) => {
+    const bucket = byPackage.get(key);
+    if (bucket) bucket.push(file);
+    else byPackage.set(key, [file]);
+  };
   for (const [file, facts] of store.facts) {
     // Go: `pkg` is the package clause, and a directory holds exactly one package.
     // Elsewhere a module is file-scoped, so the directory is a weaker grouping.
     const key = facts.lang === 'go' ? `${path.posix.dirname(file)}::${facts.pkg}` : path.posix.dirname(file);
-    const bucket = byPackage.get(key);
-    if (bucket) bucket.push(file);
-    else byPackage.set(key, [file]);
+    push(key, file);
+  }
+  // Files with no parser still belong to a package: `go.mod` sits with the module it declares,
+  // `package.json` with the code it builds. They have no symbols and so can never appear in
+  // the structural graph, which is exactly why they need some other route in.
+  for (const file of store.knownFiles) {
+    if (!store.facts.has(file)) push(path.posix.dirname(file), file);
   }
 
   const packageMates = new Map<string, string[]>();

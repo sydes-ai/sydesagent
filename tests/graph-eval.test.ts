@@ -187,6 +187,26 @@ describe('change-surface recall', () => {
     expect(result.closureShare).toBeLessThan(1);
   }, 120_000);
 
+  /**
+   * `go.mod` has no symbols and never will. It was therefore missing from the answer key
+   * entirely — along with 331 `.json` and 147 `.md` gold files across the benchmark — which
+   * quietly redefined the change surface as the part of it a parser can read. It is a file the
+   * patch touches, so it is a target; structure cannot reach it, so history has to.
+   */
+  it('scores gold files that no parser can read', async () => {
+    const result = await evaluateInstance(
+      instance(diffFor(['service/pokemon.go', 'go.mod'])),
+      { workdir: path.join(scratch, 'work') },
+    );
+
+    expect(result.skipped).toBeUndefined();
+    expect(result.indexableGold).toContain('go.mod');
+    expect(result.misses).toEqual({});
+    // Half the gold set has no symbols, and the report has to say so rather than let the
+    // structural strategy's shortfall read as a modelling failure.
+    expect(result.unparsedShare).toBeCloseTo(0.5);
+  }, 120_000);
+
   it('skips instances with nothing to find', async () => {
     const single = await evaluateInstance(instance(diffFor(['service/pokemon.go'])), {
       workdir: path.join(scratch, 'work'),
