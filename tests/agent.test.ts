@@ -8,6 +8,7 @@ import { loadAgentConfig } from '../src/config.js';
 import { LocalExec } from '../src/exec/local.js';
 import { LocalGraphProvider, NullGraphProvider, type GraphProvider } from '../src/graph/provider.js';
 import { MockProvider, type MockScript } from '../src/llm/mock.js';
+import { HAS_GO } from './toolchain.js';
 import type { AgentConfig } from '../src/config.js';
 
 const GO_FIXTURE = path.resolve('fixtures/go-pokedex');
@@ -241,7 +242,7 @@ describe('agent loop', () => {
     expect(editResult).toContain('Tests covering the change');
   });
 
-  it('runs tests through the execution environment and records them', async () => {
+  it.skipIf(!HAS_GO)('runs tests through the execution environment and records them', async () => {
     const { result, llm } = await run([
       { toolCalls: [{ name: 'bash', arguments: { command: 'go test ./service/...' } }] },
       { toolCalls: [{ name: 'finish', arguments: { summary: 'done' } }] },
@@ -306,7 +307,7 @@ describe('correctness oracles', () => {
   }, 120_000);
 
   /** The compiler catches what the symbol checker cannot: bare value references. */
-  it('reports a build failure the symbol check cannot see', async () => {
+  it.skipIf(!HAS_GO)('reports a build failure the symbol check cannot see', async () => {
     const { result, llm } = await run([
       {
         toolCalls: [
@@ -335,7 +336,7 @@ describe('correctness oracles', () => {
   }, 120_000);
 
   /** Both arms get an oracle; the graph only narrows what it covers. */
-  it('compiles in the graph-off arm too, unscoped', async () => {
+  it.skipIf(!HAS_GO)('compiles in the graph-off arm too, unscoped', async () => {
     const { result, llm } = await run(
       [
         {
@@ -361,7 +362,7 @@ describe('correctness oracles', () => {
     expect(checks[0].ok).toBe(false);
   }, 120_000);
 
-  it('refuses to run tests on a build that does not compile', async () => {
+  it.skipIf(!HAS_GO)('refuses to run tests on a build that does not compile', async () => {
     const { llm } = await run([
       {
         toolCalls: [

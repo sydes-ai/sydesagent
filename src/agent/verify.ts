@@ -8,7 +8,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { ExecutionEnvironment } from '../exec/types.js';
+import type { ExecResult, ExecutionEnvironment } from '../exec/types.js';
 import type { GraphProvider } from '../graph/provider.js';
 
 export type ProjectKind = 'go' | 'node' | 'rust' | 'maven' | 'gradle' | 'unknown';
@@ -213,9 +213,20 @@ export async function planCompile(
   };
 }
 
+/**
+ * "The oracle could not run" is a different fact from "the oracle says you broke it", and
+ * conflating them is dangerous: a missing toolchain would otherwise be reported to the model
+ * as a build failure or a test regression caused by its own edit, on every single turn.
+ */
+export function isToolchainMissing(result: ExecResult): boolean {
+  return result.exitCode === 127 || /(^|\s)(command )?not found/i.test(result.stderr);
+}
+
 export interface CompileResult {
   plan: CompilePlan;
   ok: boolean;
+  /** The compiler itself is absent — the result carries no information about the change. */
+  unavailable: boolean;
   output: string;
   ms: number;
 }
@@ -245,6 +256,7 @@ export async function runCompile(
   return {
     plan,
     ok,
+    unavailable: !ok && isToolchainMissing(result),
     output: ok ? '' : condenseCompilerOutput([result.stdout, result.stderr].filter(Boolean).join('\n')),
     ms: result.ms,
   };
@@ -253,6 +265,8 @@ export async function runCompile(
 export interface VerificationResult {
   plan: VerificationPlan;
   ok: boolean;
+  /** The test runner is absent; this is not evidence about the change. */
+  unavailable: boolean;
   output: string;
   ms: number;
 }
@@ -287,6 +301,7 @@ export async function runVerification(
   return {
     plan,
     ok,
+    unavailable: !ok && isToolchainMissing(result),
     output: condenseTestOutput([result.stdout, result.stderr].filter(Boolean).join('\n'), ok),
     ms: result.ms,
   };

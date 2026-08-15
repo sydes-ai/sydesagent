@@ -80,7 +80,9 @@ export async function runInstance(
       if (baseline && !baseline.ok) {
         config = { ...config, compileAfterEdit: false };
         options.onEvent?.(
-          `compile oracle disabled: ${workspace.instanceId} does not build at its base commit`,
+          baseline.unavailable
+            ? `compile oracle disabled: no compiler available in this environment`
+            : `compile oracle disabled: ${workspace.instanceId} does not build at its base commit`,
         );
       }
     }

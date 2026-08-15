@@ -36,7 +36,9 @@ async function afterEdit(
       ctx.exec,
       ctx.config.compileTimeoutMs,
     );
-    if (result) {
+    // An absent compiler says nothing about the edit. Reporting it as a build failure would
+    // blame the model for the environment on every single turn.
+    if (result && !result.unavailable) {
       ctx.trace.emit({
         type: 'compile_check',
         turn: ctx.turn,

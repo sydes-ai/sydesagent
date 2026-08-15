@@ -23,7 +23,7 @@ export const verifyTool: Tool<Record<string, never>> = {
       ctx.exec,
       ctx.config.compileTimeoutMs,
     );
-    if (compiled) {
+    if (compiled && !compiled.unavailable) {
       ctx.trace.emit({
         type: 'compile_check',
         turn: ctx.turn,
@@ -52,6 +52,19 @@ export const verifyTool: Tool<Record<string, never>> = {
       return {
         content: 'No test runner detected for this repository; verify manually with bash.',
         isError: true,
+      };
+    }
+
+    // Same rule as the compiler: a missing test runner is not a regression. Recording it as
+    // one would tell the model its change broke the suite and would count a phantom failure
+    // in the metrics.
+    if (result.unavailable) {
+      return {
+        content:
+          `No test runner available in this environment (\`${result.plan.command}\` could not be executed). ` +
+          `This is not a test failure and says nothing about your change.`,
+        isError: true,
+        note: 'verify-unavailable',
       };
     }
 
