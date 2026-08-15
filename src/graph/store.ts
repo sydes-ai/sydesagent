@@ -1,3 +1,4 @@
+import { EMPTY_COCHANGE, type CoChangeIndex } from './cochange.js';
 import {
   fileNodeId,
   isSymbolKind,
@@ -39,6 +40,18 @@ export class GraphStore {
   private readonly fileIndex = new Map<string, Set<string>>();
   /** Per-file extraction output, retained so edges can be rebuilt after an edit. */
   readonly facts = new Map<string, FileFacts>();
+  /**
+   * Every file the lister returned, parsed or not.
+   *
+   * Without this, "we could not index that file" and "that file does not exist here" are
+   * indistinguishable — which hid a whole repository indexing to zero files behind a message
+   * that read like an ordinary miss.
+   */
+  readonly knownFiles = new Set<string>();
+  /** Files that had an adapter and still failed to parse. A silent skip is a hidden bug. */
+  readonly parseFailures = new Map<string, string>();
+  /** Files this repository's history changed together. */
+  coChange: CoChangeIndex = EMPTY_COCHANGE;
 
   /** Go module path from go.mod, used to map import paths to directories. */
   goModule?: string;

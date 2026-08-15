@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { hashContent, walkRepo } from '../util/fs.js';
+import { hashContent, listRepoFiles } from '../util/fs.js';
+import { buildCoChange, type CoChangeOptions } from './cochange.js';
 import { adapterFor } from './lang/registry.js';
 import { fileNodeId, symbolNodeId, type FileFacts, type GraphNode } from './model.js';
 import { parseSource } from './parser.js';
@@ -10,6 +11,7 @@ import { GraphStore } from './store.js';
 export interface IndexOptions {
   resolve?: ResolveOptions;
   maxFileBytes?: number;
+  coChange?: CoChangeOptions;
 }
 
 async function readGoModule(root: string): Promise<string | undefined> {
@@ -48,10 +50,18 @@ export async function indexFile(
   relPath: string,
   content: string,
 ): Promise<FileFacts | undefined> {
-  const adapter = adapterFor(relPath);
+  const adapter = adapterFor(relPath, { allowDeclarations: true });
   if (!adapter) return undefined;
 
-  const tree = await parseSource(adapter.id, content);
+  let tree;
+  try {
+    tree = await parseSource(adapter.id, content);
+  } catch (error) {
+    // Recorded rather than swallowed: a file that silently fails to parse is a hole in the
+    // graph that looks exactly like a file that was never there.
+    store.parseFailures.set(relPath, (error as Error).message);
+    return undefined;
+  }
   try {
     const extracted = adapter.extract(tree, content, relPath);
     const facts: FileFacts = {
@@ -113,16 +123,30 @@ export async function indexRepo(root: string, options: IndexOptions = {}): Promi
   store.goModule = await readGoModule(root);
   store.tsPaths = await readTsPaths(root);
 
-  const files = await walkRepo(root, { maxFileBytes: options.maxFileBytes });
+  const files = await listRepoFiles(root, { maxFileBytes: options.maxFileBytes });
+  for (const rel of files) store.knownFiles.add(rel);
+
+  // A `.d.ts` beside its own implementation would duplicate every symbol and make each one
+  // ambiguous. Standing alone - a types-only package - it is the only declaration there is,
+  // so index it rather than lose the file entirely.
+  const implementationStems = new Set(
+    files
+      .filter((f) => /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(f) && !f.endsWith('.d.ts'))
+      .map((f) => f.replace(/\.[^.]+$/, '')),
+  );
+
   for (const rel of files) {
-    if (!adapterFor(rel)) continue;
+    if (rel.endsWith('.d.ts') && implementationStems.has(rel.replace(/\.d\.ts$/, ''))) continue;
+    if (!adapterFor(rel, { allowDeclarations: true })) continue;
     try {
       const content = await readFile(path.join(root, rel), 'utf8');
       await indexFile(store, rel, content);
-    } catch {
-      /* unreadable or binary file - skip, the graph is best-effort by design */
+    } catch (error) {
+      store.parseFailures.set(rel, (error as Error).message);
     }
   }
+
+  store.coChange = await buildCoChange(root, options.coChange);
 
   store.stats.indexMs = Date.now() - started;
   resolveAll(store, options.resolve ?? DEFAULT_RESOLVE_OPTIONS);

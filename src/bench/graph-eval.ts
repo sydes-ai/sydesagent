@@ -1,123 +1,83 @@
 /**
  * Change-surface recall: graph quality measured without spending a single model call.
  *
- * Every gate in this project is otherwise "run the agent and see", which is slow, expensive,
- * and entangles graph quality with model behaviour. But the benchmark ships an answer key:
- * `fix_patch` names exactly the files a correct change touches. So we can ask the graph
- * directly - given one file from that set as a foothold, how much of the rest does it
- * surface? - and iterate on resolution quality in seconds instead of dollars.
+ * The benchmark ships an answer key — `fix_patch` names exactly the files a correct change
+ * touches — so retrieval quality can be measured directly, in seconds, for free.
  *
- * A ranking metric without a baseline means nothing, so every run also scores the null
- * hypothesis: "just look at the other files in the same directory". The graph has to beat it.
+ * Three lessons from the first full run are built into this version. Every strategy is scored
+ * side by side, because the interesting result was that they fail differently by language and
+ * a single mean hid it. Results are reported scale-free and stratified, because recall@20 is
+ * capped at 20/(|G|-1) and large patches were being scored against an impossible bar. And
+ * unindexable gold files are classified rather than lumped together, because "the patch
+ * created this file" and "we silently failed to index it" are opposite facts.
  */
-import { CONFIDENCE_RANK, type GraphEdge } from '../graph/model.js';
+import { statSync } from 'node:fs';
+import path from 'node:path';
 import { indexRepo } from '../graph/indexer.js';
+import { adapterFor } from '../graph/lang/registry.js';
 import type { GraphStore } from '../graph/store.js';
 import { changedFiles } from './patch.js';
 import { instanceId, type BenchInstance } from './dataset.js';
 import { prepareWorkspace } from './workspace.js';
-import path from 'node:path';
-
-export type Strategy = 'graph' | 'directory';
+import { buildFileGraph, graphClosure, rank, STRATEGIES, type Strategy } from './rankers.js';
 
 export const DEFAULT_K = [5, 10, 20];
 
-/**
- * File-level adjacency derived from symbol-level edges. Two files are neighbours if any
- * symbol in one references any symbol in the other.
- */
-function fileAdjacency(store: GraphStore): Map<string, Map<string, number>> {
-  const adjacency = new Map<string, Map<string, number>>();
-  const link = (from: string, to: string, weight: number) => {
-    if (from === to) return;
-    let row = adjacency.get(from);
-    if (!row) adjacency.set(from, (row = new Map()));
-    row.set(to, Math.max(row.get(to) ?? 0, weight));
-  };
-
-  for (const edge of store.edges.values() as Iterable<GraphEdge>) {
-    const from = store.nodes.get(edge.from);
-    const to = store.nodes.get(edge.to);
-    if (!from || !to) continue;
-    const weight = CONFIDENCE_RANK[edge.confidence];
-    // Undirected: a caller and a callee are equally likely to co-change.
-    link(from.file, to.file, weight);
-    link(to.file, from.file, weight);
-  }
-  return adjacency;
-}
-
-/** Breadth-first over the file graph, nearest and most-confident first. */
-function graphRanked(adjacency: Map<string, Map<string, number>>, anchor: string, limit: number): string[] {
-  const seen = new Set<string>([anchor]);
-  const out: string[] = [];
-  let frontier: string[] = [anchor];
-
-  for (let hop = 0; hop < 3 && out.length < limit; hop++) {
-    const next: { file: string; weight: number }[] = [];
-    for (const file of frontier) {
-      for (const [neighbour, weight] of adjacency.get(file) ?? []) {
-        if (seen.has(neighbour)) continue;
-        next.push({ file: neighbour, weight });
-      }
-    }
-    next.sort((a, b) => b.weight - a.weight || a.file.localeCompare(b.file));
-
-    frontier = [];
-    for (const { file } of next) {
-      if (seen.has(file)) continue;
-      seen.add(file);
-      out.push(file);
-      frontier.push(file);
-      if (out.length >= limit) break;
-    }
-    if (!frontier.length) break;
-  }
-  return out;
-}
-
-/** The null hypothesis: files sitting next to the anchor in the directory tree. */
-function directoryRanked(files: string[], anchor: string, limit: number): string[] {
-  const anchorDir = path.posix.dirname(anchor);
-  const scored = files
-    .filter((file) => file !== anchor)
-    .map((file) => {
-      const dir = path.posix.dirname(file);
-      let score = 0;
-      if (dir === anchorDir) score = 3;
-      else if (dir.startsWith(`${anchorDir}/`) || anchorDir.startsWith(`${dir}/`)) score = 2;
-      else if (path.posix.dirname(dir) === path.posix.dirname(anchorDir)) score = 1;
-      return { file, score };
-    })
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
-  return scored.slice(0, limit).map((entry) => entry.file);
-}
+/** Why a gold file never made it into the graph. Only the last three are our problem. */
+export type MissReason =
+  | 'created-by-patch'
+  | 'no-adapter'
+  | 'excluded-by-lister'
+  | 'too-large'
+  | 'parse-error';
 
 export interface InstanceEval {
   instanceId: string;
-  /** Files named by the gold patch. */
   goldFiles: string[];
-  /** Gold files the graph could possibly surface: present at base commit, in a known language. */
   indexableGold: string[];
+  /** Why each gold file we could not use was missing. */
+  misses: Record<string, MissReason>;
   anchors: number;
-  recall: Record<number, number>;
-  precision: Record<number, number>;
-  baselineRecall: Record<number, number>;
+  /** recall@k and precision@k per strategy. */
+  recall: Record<Strategy, Record<number, number>>;
+  precision: Record<Strategy, Record<number, number>>;
+  /** Scale-free: recall at k = |targets|, so a 90-file patch is not judged at k=20. */
+  recallAtG: Record<Strategy, number>;
+  /** Does the structural closure contain the targets at all, ignoring rank? */
+  closureRecall: number;
+  /** Closure size as a fraction of the repository - a closure of everything proves nothing. */
+  closureShare: number;
   skipped?: string;
 }
 
 export interface EvalOptions {
   workdir: string;
   k?: number[];
-  /** Cap on files ranked per anchor. */
   limit?: number;
+  /** Re-use an existing workspace instead of re-cloning it. */
+  reuse?: boolean;
 }
 
-/**
- * Leave-one-out over the gold file set: each gold file in turn plays the foothold the agent
- * found, and we measure how much of the remaining change surface the graph reaches.
- */
+/** Distinguishes a file the patch creates from one we failed to index. */
+function classifyMiss(store: GraphStore, root: string, file: string): MissReason {
+  let size: number | undefined;
+  try {
+    const info = statSync(path.join(root, file));
+    size = info.isFile() ? info.size : undefined;
+  } catch {
+    return 'created-by-patch';
+  }
+  if (size === undefined) return 'created-by-patch';
+  if (store.parseFailures.has(file)) return 'parse-error';
+  if (!adapterFor(file, { allowDeclarations: true })) return 'no-adapter';
+  if (size > 1_500_000) return 'too-large';
+  return 'excluded-by-lister';
+}
+
+function zeroPerStrategy<T>(make: () => T): Record<Strategy, T> {
+  return Object.fromEntries(STRATEGIES.map((s) => [s, make()])) as Record<Strategy, T>;
+}
+
 export async function evaluateInstance(
   instance: BenchInstance,
   options: EvalOptions,
@@ -127,65 +87,96 @@ export async function evaluateInstance(
   const limit = options.limit ?? Math.max(...ks);
   const gold = changedFiles(instance.fix_patch ?? '');
 
-  const empty = () => Object.fromEntries(ks.map((k) => [k, 0])) as Record<number, number>;
+  const emptyK = () => Object.fromEntries(ks.map((k) => [k, 0])) as Record<number, number>;
   const base: InstanceEval = {
     instanceId: id,
     goldFiles: gold,
     indexableGold: [],
+    misses: {},
     anchors: 0,
-    recall: empty(),
-    precision: empty(),
-    baselineRecall: empty(),
+    recall: zeroPerStrategy(emptyK),
+    precision: zeroPerStrategy(emptyK),
+    recallAtG: zeroPerStrategy(() => 0),
+    closureRecall: 0,
+    closureShare: 0,
   };
 
   if (gold.length < 2) {
     return { ...base, skipped: 'gold patch touches fewer than two files' };
   }
 
-  const workspace = await prepareWorkspace(instance, { workdir: options.workdir });
+  const workspace = await prepareWorkspace(instance, {
+    workdir: options.workdir,
+    fresh: !options.reuse,
+  });
   const store = await indexRepo(workspace.root);
   const indexed = new Set(store.files());
   const indexableGold = gold.filter((file) => indexed.has(file));
+
+  const misses: Record<string, MissReason> = {};
+  for (const file of gold) {
+    if (!indexed.has(file)) misses[file] = classifyMiss(store, workspace.root, file);
+  }
 
   if (indexableGold.length < 2) {
     return {
       ...base,
       indexableGold,
-      skipped: `only ${indexableGold.length} gold file(s) are indexable (new files or unsupported language)`,
+      misses,
+      skipped: `only ${indexableGold.length} gold file(s) are indexable`,
     };
   }
 
-  const adjacency = fileAdjacency(store);
+  const fileGraph = buildFileGraph(store);
   const allFiles = store.files();
+  const ctx = { store, fileGraph, allFiles };
 
-  const recall = empty();
-  const precision = empty();
-  const baselineRecall = empty();
+  const recall = zeroPerStrategy(emptyK);
+  const precision = zeroPerStrategy(emptyK);
+  const recallAtG = zeroPerStrategy(() => 0);
+  let closureRecall = 0;
+  let closureShare = 0;
 
   for (const anchor of indexableGold) {
     const targets = new Set(indexableGold.filter((file) => file !== anchor));
-    const ranked = graphRanked(adjacency, anchor, limit);
-    const baseline = directoryRanked(allFiles, anchor, limit);
 
-    for (const k of ks) {
-      const top = ranked.slice(0, k);
-      const hits = top.filter((file) => targets.has(file)).length;
-      recall[k] += hits / targets.size;
-      precision[k] += top.length ? hits / top.length : 0;
+    const closure = graphClosure(fileGraph, anchor);
+    closureRecall += [...targets].filter((f) => closure.has(f)).length / targets.size;
+    closureShare += closure.size / Math.max(1, allFiles.length);
 
-      const baseTop = baseline.slice(0, k);
-      baselineRecall[k] += baseTop.filter((file) => targets.has(file)).length / targets.size;
+    for (const strategy of STRATEGIES) {
+      const ranked = rank(strategy, ctx, anchor, Math.max(limit, targets.size));
+      for (const k of ks) {
+        const top = ranked.slice(0, k);
+        const hits = top.filter((file) => targets.has(file)).length;
+        recall[strategy][k] += hits / targets.size;
+        precision[strategy][k] += top.length ? hits / top.length : 0;
+      }
+      const atG = ranked.slice(0, targets.size);
+      recallAtG[strategy] += atG.filter((file) => targets.has(file)).length / targets.size;
     }
   }
 
   const anchors = indexableGold.length;
-  for (const k of ks) {
-    recall[k] /= anchors;
-    precision[k] /= anchors;
-    baselineRecall[k] /= anchors;
+  for (const strategy of STRATEGIES) {
+    for (const k of ks) {
+      recall[strategy][k] /= anchors;
+      precision[strategy][k] /= anchors;
+    }
+    recallAtG[strategy] /= anchors;
   }
 
-  return { ...base, indexableGold, anchors, recall, precision, baselineRecall };
+  return {
+    ...base,
+    indexableGold,
+    misses,
+    anchors,
+    recall,
+    precision,
+    recallAtG,
+    closureRecall: closureRecall / anchors,
+    closureShare: closureShare / anchors,
+  };
 }
 
 export interface EvalSummary {
@@ -193,27 +184,56 @@ export interface EvalSummary {
   scored: number;
   skipped: number;
   k: number[];
-  recall: Record<number, number>;
-  precision: Record<number, number>;
-  baselineRecall: Record<number, number>;
+  recall: Record<Strategy, Record<number, number>>;
+  precision: Record<Strategy, Record<number, number>>;
+  recallAtG: Record<Strategy, number>;
+  /** Instances where a strategy strictly beats the directory baseline at k = |targets|. */
+  wins: Record<Strategy, number>;
+  closureRecall: number;
+  closureShare: number;
+  missReasons: Record<string, number>;
   perInstance: InstanceEval[];
 }
 
 export function summarise(results: InstanceEval[], ks: number[] = DEFAULT_K): EvalSummary {
   const scored = results.filter((r) => !r.skipped);
-  const mean = (pick: (r: InstanceEval) => Record<number, number>) =>
-    Object.fromEntries(
-      ks.map((k) => [k, scored.length ? scored.reduce((sum, r) => sum + pick(r)[k], 0) / scored.length : 0]),
-    ) as Record<number, number>;
+  const n = Math.max(1, scored.length);
+
+  const recall = zeroPerStrategy(() => Object.fromEntries(ks.map((k) => [k, 0])) as Record<number, number>);
+  const precision = zeroPerStrategy(() => Object.fromEntries(ks.map((k) => [k, 0])) as Record<number, number>);
+  const recallAtG = zeroPerStrategy(() => 0);
+  const wins = zeroPerStrategy(() => 0);
+
+  for (const result of scored) {
+    for (const strategy of STRATEGIES) {
+      for (const k of ks) {
+        recall[strategy][k] += result.recall[strategy][k] / n;
+        precision[strategy][k] += result.precision[strategy][k] / n;
+      }
+      recallAtG[strategy] += result.recallAtG[strategy] / n;
+      if (result.recallAtG[strategy] > result.recallAtG.directory) wins[strategy] += 1;
+    }
+  }
+
+  const missReasons: Record<string, number> = {};
+  for (const result of results) {
+    for (const reason of Object.values(result.misses)) {
+      missReasons[reason] = (missReasons[reason] ?? 0) + 1;
+    }
+  }
 
   return {
     instances: results.length,
     scored: scored.length,
     skipped: results.length - scored.length,
     k: ks,
-    recall: mean((r) => r.recall),
-    precision: mean((r) => r.precision),
-    baselineRecall: mean((r) => r.baselineRecall),
+    recall,
+    precision,
+    recallAtG,
+    wins,
+    closureRecall: scored.reduce((sum, r) => sum + r.closureRecall, 0) / n,
+    closureShare: scored.reduce((sum, r) => sum + r.closureShare, 0) / n,
+    missReasons,
     perInstance: results,
   };
 }
@@ -221,22 +241,36 @@ export function summarise(results: InstanceEval[], ks: number[] = DEFAULT_K): Ev
 export function renderEvalSummary(summary: EvalSummary): string {
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
   const lines: string[] = [];
+  const n = summary.scored;
 
-  lines.push(`Change-surface recall over ${summary.scored} scored instance(s)`);
-  lines.push(`(${summary.skipped} skipped: single-file patches or unindexable gold files)`);
+  lines.push(`Change-surface recall over ${n} scored instance(s) of ${summary.instances}`);
   lines.push('');
-  lines.push('  k   graph recall   precision   directory baseline   lift');
-  for (const k of summary.k) {
-    const graph = summary.recall[k];
-    const baseline = summary.baselineRecall[k];
-    const lift = baseline === 0 ? (graph > 0 ? Infinity : 0) : (graph - baseline) / baseline;
-    const liftText = Number.isFinite(lift) ? `${lift >= 0 ? '+' : ''}${(lift * 100).toFixed(0)}%` : '∞';
-    lines.push(
-      `  ${String(k).padStart(2)}   ${pct(graph).padStart(12)}   ${pct(summary.precision[k]).padStart(9)}   ${pct(baseline).padStart(18)}   ${liftText.padStart(6)}`,
-    );
+  lines.push(`  ${'strategy'.padEnd(11)}${summary.k.map((k) => `recall@${k}`.padStart(11)).join('')}${'recall@|G|'.padStart(12)}${'beats dir'.padStart(11)}`);
+  for (const strategy of STRATEGIES) {
+    const cols = summary.k.map((k) => pct(summary.recall[strategy][k]).padStart(11)).join('');
+    const wins = strategy === 'directory' ? '—' : `${summary.wins[strategy]}/${n}`;
+    lines.push(`  ${strategy.padEnd(11)}${cols}${pct(summary.recallAtG[strategy]).padStart(12)}${wins.padStart(11)}`);
   }
+
   lines.push('');
-  lines.push('Recall is what fraction of the rest of the gold patch the graph surfaces from one');
-  lines.push('gold file. The graph has to beat the directory baseline to be worth its cost.');
+  lines.push(`Soundness: the structural closure contains ${pct(summary.closureRecall)} of the target`);
+  lines.push(`files, while spanning ${pct(summary.closureShare)} of the repository. A closure that`);
+  lines.push('reaches everything proves nothing — read the two together.');
+
+  if (Object.keys(summary.missReasons).length) {
+    lines.push('');
+    lines.push('Gold files not in the graph:');
+    for (const [reason, count] of Object.entries(summary.missReasons).sort((a, b) => b[1] - a[1])) {
+      const ours = reason === 'parse-error' || reason === 'excluded-by-lister' || reason === 'too-large';
+      lines.push(`  ${reason.padEnd(20)} ${String(count).padStart(5)}${ours ? '   <- ours to fix' : ''}`);
+    }
+  }
+
+  lines.push('');
+  lines.push(
+    `Population: instances whose gold patch touches at least two files the graph can parse. ` +
+      `${summary.skipped} of ${summary.instances} were excluded, so these numbers describe ` +
+      `multi-file source changes, not all changes.`,
+  );
   return lines.join('\n');
 }

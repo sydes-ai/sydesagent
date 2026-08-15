@@ -278,6 +278,7 @@ program
   .option('-k, --k <values>', 'cutoffs to report', '5,10,20')
   .option('-w, --workdir <dir>', 'clone and workspace cache', '.sydes-bench')
   .option('-o, --out <file>', 'write the full JSON result')
+  .option('--reuse', 're-use existing workspaces instead of re-cloning them')
   .action(async (opts) => {
     const ks = String(opts.k)
       .split(',')
@@ -300,12 +301,16 @@ program
       const id = `${instance.org}__${instance.repo}-${instance.number}`;
       process.stderr.write(`[eval] (${i + 1}/${instances.length}) ${id} … `);
       try {
-        const result = await evaluateInstance(instance, { workdir: path.resolve(opts.workdir), k: ks });
+        const result = await evaluateInstance(instance, {
+          workdir: path.resolve(opts.workdir),
+          k: ks,
+          reuse: Boolean(opts.reuse),
+        });
         results.push(result);
         console.error(
           result.skipped
             ? `skipped (${result.skipped})`
-            : `recall@${ks[0]}=${(result.recall[ks[0]] * 100).toFixed(0)}% over ${result.anchors} anchor(s)`,
+            : `combined@|G|=${(result.recallAtG.combined * 100).toFixed(0)}% graph=${(result.recallAtG.graph * 100).toFixed(0)}% dir=${(result.recallAtG.directory * 100).toFixed(0)}% (${result.anchors} anchors)`,
         );
       } catch (error) {
         console.error(`failed: ${(error as Error).message}`);

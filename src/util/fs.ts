@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -132,6 +133,45 @@ export async function walkRepo(root: string, options: WalkOptions = {}): Promise
 
   await visit('');
   return out.sort();
+}
+
+/**
+ * Files git tracks, which in a clean checkout is exactly "what the repository contains".
+ *
+ * The ignore heuristics below are calibrated for a developer's working tree, where `build/`
+ * and `dist/` hold generated junk. A benchmark workspace is a fresh checkout where every file
+ * present is tracked, so applying those heuristics there can only lose real source. Asking git
+ * removes the guesswork — and the reimplementation of .gitignore — entirely.
+ */
+export async function listGitTracked(root: string): Promise<string[] | undefined> {
+  return new Promise((resolve) => {
+    execFile('git', ['-C', root, 'ls-files', '-z'], { maxBuffer: 256 * 1024 * 1024 }, (error, stdout) => {
+      if (error) return resolve(undefined);
+      const files = stdout.split('\0').filter(Boolean);
+      resolve(files.length ? files : undefined);
+    });
+  });
+}
+
+/**
+ * The repository's files: git's answer when this is a checkout, the walker otherwise.
+ * Size and ignore filters still apply to the walker; git's list only gets the size filter.
+ */
+export async function listRepoFiles(root: string, options: WalkOptions = {}): Promise<string[]> {
+  const tracked = await listGitTracked(root);
+  if (!tracked) return walkRepo(root, options);
+
+  const maxBytes = options.maxFileBytes ?? 1_500_000;
+  const kept: string[] = [];
+  for (const rel of tracked) {
+    try {
+      const info = await stat(path.join(root, rel));
+      if (info.isFile() && info.size <= maxBytes) kept.push(rel);
+    } catch {
+      /* listed but missing: a broken symlink or a sparse checkout */
+    }
+  }
+  return kept.sort();
 }
 
 export function hashContent(content: string): string {

@@ -3,9 +3,31 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { BenchInstance } from '../src/bench/dataset.js';
-import { DEFAULT_K, evaluateInstance, summarise } from '../src/bench/graph-eval.js';
+import { DEFAULT_K, evaluateInstance, summarise, type InstanceEval } from '../src/bench/graph-eval.js';
+import { STRATEGIES } from '../src/bench/rankers.js';
+
 import { changedFiles, parsePatchFiles } from '../src/bench/patch.js';
 import { LocalExec } from '../src/exec/local.js';
+
+/** Builds a scored result with the same value for every strategy and cutoff. */
+function scoredFixture(id: string, value: number): InstanceEval {
+  const perK = () => Object.fromEntries(DEFAULT_K.map((k) => [k, value]));
+  const perStrategy = <T>(make: () => T) =>
+    Object.fromEntries(STRATEGIES.map((s) => [s, make()])) as Record<string, T>;
+  return {
+    instanceId: id,
+    goldFiles: [],
+    indexableGold: [],
+    misses: {},
+    anchors: 2,
+    recall: perStrategy(perK),
+    precision: perStrategy(perK),
+    recallAtG: perStrategy(() => value),
+    closureRecall: value,
+    closureShare: 0.1,
+  } as unknown as InstanceEval;
+}
+
 
 const GO_FIXTURE = path.resolve('fixtures/go-pokedex');
 
@@ -105,13 +127,20 @@ describe('change-surface recall', () => {
     expect(result.anchors).toBe(3);
 
     // Every one of these files reaches the others within a few hops.
-    expect(result.recall[10]).toBe(1);
-    expect(result.precision[10]).toBeGreaterThan(0);
+    expect(result.recall.graph[10]).toBe(1);
+    expect(result.precision.graph[10]).toBeGreaterThan(0);
 
     // The baseline is a genuine competitor - sibling top-level packages count as "nearby",
     // so it finds part of the surface by luck. The graph has to beat it, not merely differ.
-    expect(result.baselineRecall[10]).toBeGreaterThan(0);
-    expect(result.recall[10]).toBeGreaterThan(result.baselineRecall[10]);
+    expect(result.recall.directory[10]).toBeGreaterThan(0);
+    expect(result.recall.graph[10]).toBeGreaterThan(result.recall.directory[10]);
+
+    // Fusing the signals must not lose what the graph alone found.
+    expect(result.recall.combined[10]).toBe(1);
+
+    // Soundness: the closure reaches the whole target set without spanning the whole repo.
+    expect(result.closureRecall).toBe(1);
+    expect(result.closureShare).toBeLessThan(1);
   }, 120_000);
 
   it('skips instances with nothing to find', async () => {
@@ -130,6 +159,8 @@ describe('change-surface recall', () => {
       { workdir: path.join(scratch, 'work') },
     );
     expect(created.skipped).toContain('indexable');
+    // And it says *why* each one was missing, rather than lumping them together.
+    expect(Object.values(created.misses)).toEqual(['created-by-patch', 'created-by-patch']);
   }, 120_000);
 
   it('reports honestly when the graph finds nothing', async () => {
@@ -139,32 +170,15 @@ describe('change-surface recall', () => {
       { workdir: path.join(scratch, 'work') },
     );
     expect(result.skipped).toBeUndefined();
-    expect(result.recall[5]).toBeGreaterThanOrEqual(0);
-    expect(result.recall[5]).toBeLessThanOrEqual(1);
+    expect(result.recall.graph[5]).toBeGreaterThanOrEqual(0);
+    expect(result.recall.graph[5]).toBeLessThanOrEqual(1);
   }, 120_000);
 
   it('averages only over scored instances', () => {
     const summary = summarise(
       [
-        {
-          instanceId: 'a',
-          goldFiles: [],
-          indexableGold: [],
-          anchors: 2,
-          recall: { 5: 1, 10: 1, 20: 1 },
-          precision: { 5: 0.5, 10: 0.5, 20: 0.5 },
-          baselineRecall: { 5: 0, 10: 0, 20: 0 },
-        },
-        {
-          instanceId: 'b',
-          goldFiles: [],
-          indexableGold: [],
-          anchors: 0,
-          recall: { 5: 0, 10: 0, 20: 0 },
-          precision: { 5: 0, 10: 0, 20: 0 },
-          baselineRecall: { 5: 0, 10: 0, 20: 0 },
-          skipped: 'single-file patch',
-        },
+        scoredFixture('a', 1),
+        { ...scoredFixture('b', 0), skipped: 'single-file patch' },
       ],
       DEFAULT_K,
     );
@@ -172,6 +186,6 @@ describe('change-surface recall', () => {
     expect(summary.instances).toBe(2);
     expect(summary.scored).toBe(1);
     expect(summary.skipped).toBe(1);
-    expect(summary.recall[5]).toBe(1);
+    expect(summary.recall.graph[5]).toBe(1);
   });
 });

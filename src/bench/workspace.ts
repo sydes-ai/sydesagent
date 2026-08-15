@@ -26,6 +26,15 @@ async function exists(target: string): Promise<boolean> {
   }
 }
 
+export interface PrepareOptions {
+  workdir: string;
+  /**
+   * Wipe and re-clone. Off means an existing workspace is reused as-is, which turns a second
+   * measurement pass over the same instances from hours of cloning into minutes.
+   */
+  fresh?: boolean;
+}
+
 export interface PreparedWorkspace {
   root: string;
   instanceId: string;
@@ -33,7 +42,7 @@ export interface PreparedWorkspace {
 
 export async function prepareWorkspace(
   instance: BenchInstance,
-  options: { workdir: string; fresh?: boolean },
+  options: PrepareOptions,
 ): Promise<PreparedWorkspace> {
   const id = instanceId(instance);
   const mirrorDir = path.join(options.workdir, 'mirrors', `${instance.org}__${instance.repo}.git`);
@@ -55,6 +64,9 @@ export async function prepareWorkspace(
       throw new Error(`clone of ${repoUrl(instance)} failed: ${clone.stderr.trim().slice(0, 400)}`);
     }
   }
+
+  const reuse = options.fresh === false && (await exists(path.join(workspace, '.git')));
+  if (reuse) return { root: workspace, instanceId: id };
 
   if (options.fresh !== false) await rm(workspace, { recursive: true, force: true });
   if (!(await exists(workspace))) {

@@ -16,9 +16,13 @@ for (const adapter of ADAPTERS) {
   for (const ext of adapter.extensions) BY_EXT.set(ext, adapter);
 }
 
-export function adapterFor(relPath: string): LanguageAdapter | undefined {
-  // `.d.ts` files are declarations only; indexing them duplicates every symbol.
-  if (relPath.endsWith('.d.ts')) return undefined;
+export function adapterFor(
+  relPath: string,
+  options: { allowDeclarations?: boolean } = {},
+): LanguageAdapter | undefined {
+  // A `.d.ts` duplicates the symbols of its implementation, so it is excluded by default.
+  // The indexer admits the standalone ones, where no implementation exists to duplicate.
+  if (relPath.endsWith('.d.ts') && !options.allowDeclarations) return undefined;
   return BY_EXT.get(path.posix.extname(relPath));
 }
 
