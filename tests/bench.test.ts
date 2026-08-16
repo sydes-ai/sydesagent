@@ -169,6 +169,11 @@ describe('instance run', () => {
       exec: 'local',
     });
 
+    // A run that hit a ceiling is not the same evidence as one that finished, and for four
+    // rounds that difference was only recoverable by parsing the trace afterwards — every
+    // headline number in the first A/B came from runs that had silently hit one.
+    expect(result.stopReason).toBe('finished');
+
     expect(result.instanceId).toBe('example__pokedex-2787');
     expect(result.prediction).toMatchObject({ org: 'example', repo: 'pokedex', number: 2787 });
     expect(result.prediction.fix_patch).toContain('diff --git a/service/pokemon.go');

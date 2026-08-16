@@ -38,6 +38,12 @@ export interface InstanceResult {
   prediction: Prediction;
   metrics: RunMetrics;
   patchBytes: number;
+  /**
+   * Why the loop stopped. Surfaced on the progress line because the difference between
+   * `finished` and a budget running out is the difference between a result and an artifact,
+   * and it was previously only recoverable by parsing the trace afterwards.
+   */
+  stopReason: string;
   error?: string;
   verified?: boolean;
 }
@@ -181,6 +187,7 @@ export async function runInstance(
     return {
       instanceId: workspace.instanceId,
       prediction: toPrediction(instance, patch),
+      stopReason: result.stopReason,
       metrics,
       patchBytes: patch.length,
       verified: metrics.verified,

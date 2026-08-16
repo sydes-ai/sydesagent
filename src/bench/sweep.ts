@@ -112,7 +112,8 @@ export async function runSweep(
         await saveResult(options.outDir, result);
         await done(
           result,
-          `${result.patchBytes ? `${result.patchBytes}b patch` : 'no patch'}, ${result.metrics.modelCalls} model calls`,
+          `${result.patchBytes ? `${result.patchBytes}b patch` : 'no patch'}, ` +
+            `${result.metrics.modelCalls} model calls, ${result.stopReason}`,
           index,
         );
       } catch (error) {
