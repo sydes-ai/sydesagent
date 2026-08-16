@@ -90,6 +90,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let turn = 0;
   let nudges = 0;
   let totalTokens = 0;
+  let billedTokens = 0;
   let finalMessage = '';
   let stopReason: AgentRunResult['stopReason'] = 'max_turns';
 
@@ -126,6 +127,12 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     const cacheRead = response.usage.cacheReadTokens ?? 0;
     const cacheWrite = response.usage.cacheWriteTokens ?? 0;
     totalTokens += response.usage.inputTokens + response.usage.outputTokens + cacheRead + cacheWrite;
+    // The budget counts fresh tokens only. Cache reads are the same prefix re-read every turn:
+    // they bill at a fraction of the input rate and grow with turn count rather than with work
+    // done, so including them turns a spend ceiling into a turn cap that varies with prefix
+    // size. Worse for this experiment, the graph arm carries the larger prefix, so it would hit
+    // that cap first — biasing the A/B against the thing being measured.
+    billedTokens += response.usage.inputTokens + response.usage.outputTokens + cacheWrite;
     trace.emit({
       type: 'model_call',
       turn,
@@ -206,7 +213,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     }
     if (done) break;
 
-    if (totalTokens > config.maxTotalTokens) {
+    if (billedTokens > config.maxTotalTokens) {
       stopReason = 'token_budget';
       finalMessage = 'stopped: token budget exhausted';
       break;

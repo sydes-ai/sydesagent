@@ -3,7 +3,16 @@ import type { ChatRequest, ChatResponse, LLMProvider, ToolCall } from './types.j
 export interface MockTurn {
   text?: string;
   toolCalls?: { name: string; arguments: Record<string, unknown> }[];
-  usage?: { inputTokens: number; outputTokens: number };
+  /**
+   * Cache fields included so tests can express a large re-read prefix — the situation that
+   * made the token budget behave as a turn cap.
+   */
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
 }
 
 export type MockScript = (MockTurn | ((request: ChatRequest, turn: number) => MockTurn))[];

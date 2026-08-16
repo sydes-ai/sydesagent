@@ -535,3 +535,37 @@ describe('pre-existing test failures', () => {
     expect(parseTestFailures('ok  \tgithub.com/cli/cli/v2/pkg/set\t0.006s').size).toBe(0);
   });
 });
+
+
+/**
+ * The budget must not count cache reads.
+ *
+ * `totalTokens` includes the cached prefix re-read on every call, which grows with turn count
+ * rather than with work done. Counting it made a spend ceiling behave as a turn cap whose
+ * length depended on prefix size — and the graph arm carries the larger prefix, so it would
+ * have hit the ceiling first. A run that ended on `token_budget` after 30 turns of an 80-turn
+ * allowance is what surfaced this.
+ */
+describe('token budget', () => {
+  it('spends the budget on fresh tokens, not on re-read cache', async () => {
+    const script: MockScript = [];
+    for (let i = 0; i < 12; i++) {
+      script.push({
+        toolCalls: [{ name: 'read_file', arguments: { path: 'service/pokemon.go' } }],
+        usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 50_000 },
+      });
+    }
+    script.push({ toolCalls: [{ name: 'finish', arguments: { summary: 'done' } }] });
+
+    const config_ceiling = 20_000;
+    const { result } = await run(script, { config: { maxTotalTokens: config_ceiling } });
+
+    // Cache reads alone would be 600k, far past the ceiling; fresh tokens never reach it.
+    expect(result.stopReason).toBe('finished');
+
+    // Cache reads alone total 600k, thirty times the ceiling; the run still completes.
+    const calls = result.trace.ofType('model_call');
+    const cacheRead = calls.reduce((sum, c) => sum + ((c.cacheReadTokens as number) ?? 0), 0);
+    expect(cacheRead).toBeGreaterThan(config_ceiling * 25);
+  });
+});

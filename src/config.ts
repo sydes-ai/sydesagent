@@ -31,6 +31,9 @@ export const EnrichmentSchema = z.object({
 export const AgentConfigSchema = z.object({
   graph: z.boolean().default(true),
   maxTurns: z.number().int().positive().default(40),
+  /**
+   * Spend ceiling in fresh tokens — cache reads excluded; see the accumulator in `loop.ts`.
+   */
   maxTotalTokens: z.number().int().positive().default(400_000),
   /**
    * Hard ceiling before old tool results get trimmed.
@@ -45,7 +48,14 @@ export const AgentConfigSchema = z.object({
   /** Ask providers to cache the stable prefix. Off only for caching ablations. */
   promptCache: z.boolean().default(true),
   temperature: z.number().min(0).max(2).default(0),
-  maxTokens: z.number().int().positive().default(4096),
+  /**
+   * Output cap per model call.
+   *
+   * 4096 silently broke reasoning models: their thinking bills as output, so gpt-5 spent an
+   * entire turn producing 4096 tokens, hit `length`, and returned no tool call at all. The
+   * turn was paid for and bought nothing. Reasoning needs headroom the answer itself does not.
+   */
+  maxTokens: z.number().int().positive().default(16_384),
   /** Truncation limit for a single file read, in lines. */
   maxReadLines: z.number().int().positive().default(600),
   maxGrepResults: z.number().int().positive().default(40),
