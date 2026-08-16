@@ -15,6 +15,15 @@ export interface ToolContext {
   exec: ExecutionEnvironment;
   config: AgentConfig;
   turn: number;
+  /**
+   * Test failures already present at the base commit.
+   *
+   * Threaded through the context rather than recomputed per call: the suite is expensive to
+   * run, and every `run_tests` needs the same answer to the same question — which of these
+   * failures did the agent actually cause. Undefined means the baseline was never established,
+   * and verification falls back to the exit code.
+   */
+  testBaseline?: Set<string>;
 }
 
 export interface ToolResult {

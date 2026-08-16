@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runAgent } from '../src/agent/loop.js';
+import { parseTestFailures } from '../src/agent/verify.js';
 import { CORE_TOOLS } from '../src/agent/tools/index.js';
 import { loadAgentConfig } from '../src/config.js';
 import { LocalExec } from '../src/exec/local.js';
@@ -506,5 +507,31 @@ describe('tool robustness', () => {
     const { result } = await run(script, { config: { maxTurns: 3 } });
     expect(result.stopReason).toBe('max_turns');
     expect(result.turns).toBe(3);
+  });
+});
+
+
+/**
+ * Real repositories are not green. cli/cli fails `go test ./...` at its own base commit, and
+ * the official harness knows it — `prepare.sh` ends with `|| true` and scoring diffs individual
+ * test results rather than reading an exit code. We judged by exit code, so all 27 test runs of
+ * the first A/B were marked failures no matter what the agent did, in both arms.
+ */
+describe('pre-existing test failures', () => {
+  it('names the failing units in Go and JS test logs', () => {
+    const go = parseTestFailures(
+      ['ok  \tgithub.com/cli/cli/v2/pkg/set\t0.006s',
+       'FAIL\tgithub.com/cli/cli/v2/pkg/cmd/gist\t0.2s',
+       '--- FAIL: TestDeleteGist'].join('\n'),
+    );
+    expect(go).toEqual(new Set(['github.com/cli/cli/v2/pkg/cmd/gist', 'TestDeleteGist']));
+
+    expect(parseTestFailures(' FAIL  src/lib/parse.test.ts')).toEqual(
+      new Set(['src/lib/parse.test.ts']),
+    );
+  });
+
+  it('finds nothing in a passing log, so a green suite stays green', () => {
+    expect(parseTestFailures('ok  \tgithub.com/cli/cli/v2/pkg/set\t0.006s').size).toBe(0);
   });
 });

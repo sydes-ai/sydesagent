@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runAgent } from '../agent/loop.js';
-import { runCompile, runVerification } from '../agent/verify.js';
+import { baselineTestFailures, runCompile, runVerification } from '../agent/verify.js';
 import type { AgentConfig } from '../config.js';
 import { DockerExec, copyOut, startContainer } from '../exec/docker.js';
 import { LocalExec } from '../exec/local.js';
@@ -113,6 +113,21 @@ export async function runInstance(
       }
     }
 
+    // The same reasoning as the compile oracle above, applied to tests. Real repositories are
+    // not green: cli/cli fails `go test ./...` at its own base commit, so an exit-code verdict
+    // marks every edit a failure. Record what was already broken and judge only what changed.
+    const testBaseline = await baselineTestFailures(
+      workspace.root,
+      graph,
+      exec,
+      config.bashTimeoutMs,
+    );
+    if (testBaseline?.size) {
+      options.onEvent?.(
+        `${testBaseline.size} test failure(s) already present at ${workspace.instanceId}'s base commit`,
+      );
+    }
+
     const llm = createProvider(options.provider);
     const result = await runAgent({
       root: workspace.root,
@@ -122,6 +137,7 @@ export async function runInstance(
       exec,
       config,
       runId: `${workspace.instanceId}-${options.graph ? 'graph' : 'base'}`,
+      testBaseline,
       onEvent: options.onEvent,
     });
 
@@ -134,6 +150,7 @@ export async function runInstance(
         graph,
         exec,
         config.bashTimeoutMs,
+        testBaseline,
       );
       if (verification) {
         result.trace.emit({

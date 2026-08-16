@@ -262,9 +262,29 @@ export async function runCompile(
   };
 }
 
+/**
+ * Failing units named in a test log, so a run can be judged by what it broke.
+ *
+ * Matches Go's `FAIL<TAB>pkg` and `--- FAIL: TestName`, and the `FAIL path/to/file` that vitest
+ * and jest print. Deliberately identifier-level rather than a count: a suite that was already
+ * red stays red, and the only question that matters is whether this edit added anything to it.
+ */
+export function parseTestFailures(output: string): Set<string> {
+  const failures = new Set<string>();
+  for (const line of output.split('\n')) {
+    const match = /^\s*(?:---\s+)?FAIL:?\s+(\S+)/.exec(line);
+    if (match) failures.add(match[1]);
+  }
+  return failures;
+}
+
 export interface VerificationResult {
   plan: VerificationPlan;
   ok: boolean;
+  /** Failures this change added — the only ones that are evidence against it. */
+  introduced: string[];
+  /** Failures the suite already had, reported so a red log does not read as a lie. */
+  preexisting: string[];
   /** The test runner is absent; this is not evidence about the change. */
   unavailable: boolean;
   output: string;
@@ -285,24 +305,67 @@ export function condenseTestOutput(output: string, ok: boolean, limit = 4000): s
   return body.length > limit ? `${body.slice(0, limit)}\n… [output trimmed]` : body;
 }
 
+/**
+ * Failures already present before the agent touched anything.
+ *
+ * Real repositories are not green. cli/cli fails `go test ./...` at its own base commit, and
+ * the official harness knows it — its `prepare.sh` ends with `|| true`, and it scores by
+ * diffing individual test results rather than by an exit code. Judging the agent by the exit
+ * code of a suite that was already red marks every edit a failure, which is what happened for
+ * all 27 test runs of the first A/B.
+ */
+export async function baselineTestFailures(
+  root: string,
+  graph: GraphProvider,
+  exec: ExecutionEnvironment,
+  timeoutMs: number,
+): Promise<Set<string> | undefined> {
+  const plan = await planVerification(root, [], graph);
+  if (!plan?.command) return undefined;
+  const result = await exec.run(plan.command, { timeoutMs });
+  if (result.exitCode === 0) return new Set();
+  const output = [result.stdout, result.stderr].filter(Boolean).join('\n');
+  if (isToolchainMissing(result)) return undefined;
+  return parseTestFailures(output);
+}
+
 export async function runVerification(
   root: string,
   editedFiles: string[],
   graph: GraphProvider,
   exec: ExecutionEnvironment,
   timeoutMs: number,
+  baseline?: Set<string>,
 ): Promise<VerificationResult | undefined> {
   const plan = await planVerification(root, editedFiles, graph);
   if (!plan?.command) return undefined;
 
   await exec.sync?.(editedFiles);
   const result = await exec.run(plan.command, { timeoutMs });
-  const ok = result.exitCode === 0;
+  const rawOutput = [result.stdout, result.stderr].filter(Boolean).join('\n');
+  const failures = parseTestFailures(rawOutput);
+  const preexisting = [...failures].filter((f) => baseline?.has(f));
+  const introduced = [...failures].filter((f) => !baseline?.has(f));
+
+  // A non-zero exit with nothing but known failures is the suite's problem, not the edit's.
+  // The `failures.size > 0` guard matters: an unparseable failure must stay a failure rather
+  // than pass by producing an empty set.
+  const ok =
+    result.exitCode === 0 ||
+    (baseline !== undefined && failures.size > 0 && introduced.length === 0);
+  // Say so explicitly. A suite reported as passing while printing FAIL lines reads like a bug,
+  // and a model that distrusts its own test output starts re-running it instead of working.
+  const note = preexisting.length
+    ? `\n(${preexisting.length} failure(s) already present at the base commit, not caused by this change)`
+    : '';
+
   return {
     plan,
     ok,
+    introduced,
+    preexisting,
     unavailable: !ok && isToolchainMissing(result),
-    output: condenseTestOutput([result.stdout, result.stderr].filter(Boolean).join('\n'), ok),
+    output: condenseTestOutput(rawOutput, ok) + note,
     ms: result.ms,
   };
 }

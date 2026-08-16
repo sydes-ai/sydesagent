@@ -20,6 +20,8 @@ export interface AgentRunOptions {
   exec: ExecutionEnvironment;
   config: AgentConfig;
   runId?: string;
+  /** Failures present before the run; see `baselineTestFailures`. */
+  testBaseline?: Set<string>;
   /** Called after each turn, for CLI progress output. */
   onEvent?: (line: string) => void;
 }
@@ -187,6 +189,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         exec,
         config,
         turn,
+        testBaseline: options.testBaseline,
       });
       options.onEvent?.(`turn ${turn}: ${call.name}(${describeArgs(call)}) → ${result.content.length}b`);
       messages.push({

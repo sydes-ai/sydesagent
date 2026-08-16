@@ -46,6 +46,7 @@ export const verifyTool: Tool<Record<string, never>> = {
       ctx.graph,
       ctx.exec,
       ctx.config.bashTimeoutMs,
+      ctx.testBaseline,
     );
 
     if (!result) {
