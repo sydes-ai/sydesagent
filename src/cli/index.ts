@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Command } from 'commander';
 import { runAgent } from '../agent/loop.js';
@@ -279,6 +279,7 @@ program
   .option('-w, --workdir <dir>', 'clone and workspace cache', '.sydes-bench')
   .option('-o, --out <file>', 'write the full JSON result')
   .option('--reuse', 're-use existing workspaces instead of re-cloning them')
+  .option('--resume', 'skip instances already scored in the output file')
   .action(async (opts) => {
     const ks = String(opts.k)
       .split(',')
@@ -296,9 +297,42 @@ program
       return;
     }
 
+    // Results are written as they are produced, and an existing file is resumed from.
+    //
+    // A sweep is hours long and a single pathological repository can end the process outright
+    // — an out-of-memory kill cannot be caught, so there is no in-process recovery to write.
+    // Holding every result until the end meant one crash at instance 429 discarded 429
+    // instances of work.
+    // The progress file is append-only, one JSON object per instance. Rewriting the whole
+    // summary after every instance would be quadratic in a run of a thousand — and the summary
+    // is derived from these lines anyway, so it is written once at the end.
+    const out = opts.out ? path.resolve(opts.out) : undefined;
+    const progress = out ? `${out}.progress.jsonl` : undefined;
     const results: InstanceEval[] = [];
+    const done = new Set<string>();
+
+    if (progress && opts.resume) {
+      try {
+        for (const line of (await readFile(progress, 'utf8')).split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const result = JSON.parse(line) as InstanceEval;
+            results.push(result);
+            done.add(result.instanceId);
+          } catch {
+            // A crash mid-write leaves a partial final line. Everything before it is intact.
+          }
+        }
+        console.error(`[eval] resuming: ${done.size} instance(s) already scored`);
+      } catch {
+        console.error('[eval] no checkpoint found, starting fresh');
+      }
+    }
+    if (progress) await mkdir(path.dirname(progress), { recursive: true });
+
     for (const [i, instance] of instances.entries()) {
       const id = `${instance.org}__${instance.repo}-${instance.number}`;
+      if (done.has(id)) continue;
       process.stderr.write(`[eval] (${i + 1}/${instances.length}) ${id} … `);
       try {
         const result = await evaluateInstance(instance, {
@@ -307,6 +341,7 @@ program
           reuse: Boolean(opts.reuse),
         });
         results.push(result);
+        if (progress) await appendFile(progress, `${JSON.stringify(result)}\n`);
         console.error(
           result.skipped
             ? `skipped (${result.skipped})`
@@ -318,9 +353,8 @@ program
     }
 
     const summary = summarise(results, ks);
-    if (opts.out) {
-      await mkdir(path.dirname(path.resolve(opts.out)), { recursive: true });
-      await writeFile(opts.out, JSON.stringify(summary, null, 2));
+    if (out) {
+      await writeFile(out, JSON.stringify(summary, null, 2));
       console.error(`[eval] ${opts.out}`);
     }
     console.log(`\n${renderEvalSummary(summary)}`);

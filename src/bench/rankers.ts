@@ -66,8 +66,44 @@ export interface FileGraph {
   backward: Map<string, Map<string, number>>;
   /** Total degree per file, for damping hubs. */
   degree: Map<string, number>;
-  /** Files sharing a package (Go) or a directory (everything else). */
-  packageMates: Map<string, string[]>;
+  /**
+   * Package membership, stored as a lookup and a member list rather than as each file's own
+   * copy of its mates.
+   *
+   * Materialising the mates per file is quadratic in the size of a directory, and it ran a
+   * 978-instance sweep out of a 4GB heap on mui/material-ui. Widening the file list from
+   * parsed files to every tracked file was what exposed it: directories that held a handful of
+   * source files now hold hundreds of markdown and JSON files beside them, and a 2000-file
+   * directory was allocating two thousand 2000-element arrays.
+   */
+  packageOf: Map<string, string>;
+  packageMembers: Map<string, string[]>;
+}
+
+/**
+ * Directories above this size are treated as buckets rather than modules.
+ *
+ * A Go package is a unit of encapsulation and is rarely more than a few dozen files. A
+ * directory holding several hundred is a docs folder or a test corpus, where "shares a
+ * directory" carries no information — and since only the first `limit` mates are ever used,
+ * the signal there is whichever names the scan happened to reach first.
+ */
+const MAX_PACKAGE_SIZE = 200;
+
+/** Package mates for one file, computed on demand and never stored per file. */
+export function packageMatesOf(fileGraph: FileGraph, file: string, limit: number): string[] {
+  const key = fileGraph.packageOf.get(file);
+  if (key === undefined) return [];
+  const members = fileGraph.packageMembers.get(key);
+  if (!members || members.length > MAX_PACKAGE_SIZE) return [];
+
+  const out: string[] = [];
+  for (const mate of members) {
+    if (mate === file) continue;
+    out.push(mate);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 /**
@@ -120,12 +156,12 @@ export function buildFileGraph(store: GraphStore): FileGraph {
     if (!store.facts.has(file)) push(path.posix.dirname(file), file);
   }
 
-  const packageMates = new Map<string, string[]>();
-  for (const files of byPackage.values()) {
-    for (const file of files) packageMates.set(file, files.filter((f) => f !== file));
+  const packageOf = new Map<string, string>();
+  for (const [key, files] of byPackage) {
+    for (const file of files) packageOf.set(file, key);
   }
 
-  return { forward, backward, degree, packageMates };
+  return { forward, backward, degree, packageOf, packageMembers: byPackage };
 }
 
 /**
@@ -359,7 +395,7 @@ export function rankAll(
     dependents: dependentsRanked(ctx.fileGraph, anchor, limit),
     // On Go these are the signal the call graph structurally cannot see: one package is one
     // directory, so its files share a namespace whether or not either calls the other.
-    packages: (ctx.fileGraph.packageMates.get(anchor) ?? []).slice(0, limit),
+    packages: packageMatesOf(ctx.fileGraph, anchor, limit),
     cochange: coChangeRanked(ctx.store, anchor, limit),
     directory: directoryRanked(ctx.allFiles, anchor, limit),
   };

@@ -127,7 +127,11 @@ describe('leave-one-out ablation', () => {
         [anchor, 1],
         ['far/deep/only-graph-knows.ts', 1],
       ]),
-      packageMates: new Map([[anchor, ['src/sibling.ts']]]),
+      packageOf: new Map([
+        [anchor, 'src'],
+        ['src/sibling.ts', 'src'],
+      ]),
+      packageMembers: new Map([['src', [anchor, 'src/sibling.ts']]]),
     };
     const ctx = {
       store: { coChange: EMPTY_COCHANGE },

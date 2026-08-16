@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildFileGraph,
   dependentsRanked,
   graphRankedBFS,
   graphRankedPPR,
+  packageMatesOf,
   personalizedPageRank,
   type FileGraph,
 } from '../src/bench/rankers.js';
+import type { GraphStore } from '../src/graph/store.js';
 
 /** A unit-weight file graph, with degrees derived from the edges rather than asserted. */
 function graphOf(edges: [string, string][]): FileGraph {
@@ -25,7 +28,7 @@ function graphOf(edges: [string, string][]): FileGraph {
   for (const rows of [forward, backward]) {
     for (const [file, row] of rows) degree.set(file, (degree.get(file) ?? 0) + row.size);
   }
-  return { forward, backward, degree, packageMates: new Map() };
+  return { forward, backward, degree, packageOf: new Map(), packageMembers: new Map() };
 }
 
 describe('structural ranking', () => {
@@ -93,6 +96,45 @@ describe('structural ranking', () => {
       ['b.ts', 'anchor.ts'],
     ]);
     expect(graphRankedPPR(graph, 'anchor.ts', 10)).not.toContain('anchor.ts');
+  });
+
+  /**
+   * The allocation that ended a 978-instance sweep inside a 4GB heap. Storing each file's own
+   * copy of its package mates is quadratic in directory size, and widening the file list from
+   * parsed files to every tracked file is what made directories large enough for it to matter.
+   * One array per directory, not one per file.
+   */
+  it('stores package membership once per directory, not once per file', () => {
+    const files = Array.from({ length: 3000 }, (_, i) => `docs/page-${i}.md`);
+    const store = {
+      edges: new Map(),
+      nodes: new Map(),
+      facts: new Map(),
+      knownFiles: new Set(files),
+    } as unknown as GraphStore;
+
+    const graph = buildFileGraph(store);
+    expect(graph.packageMembers.size).toBe(1);
+    expect([...graph.packageMembers.values()][0]).toHaveLength(3000);
+
+    // And a directory that large is a bucket, not a module: sharing it says nothing, and only
+    // the first few members would ever be used anyway.
+    expect(packageMatesOf(graph, files[0], 20)).toEqual([]);
+  });
+
+  it('returns package mates, excluding the file itself, up to the limit', () => {
+    const files = ['svc/a.go', 'svc/b.go', 'svc/c.go'];
+    const store = {
+      edges: new Map(),
+      nodes: new Map(),
+      facts: new Map(),
+      knownFiles: new Set(files),
+    } as unknown as GraphStore;
+
+    const graph = buildFileGraph(store);
+    expect(packageMatesOf(graph, 'svc/a.go', 10).sort()).toEqual(['svc/b.go', 'svc/c.go']);
+    expect(packageMatesOf(graph, 'svc/a.go', 1)).toHaveLength(1);
+    expect(packageMatesOf(graph, 'nowhere/x.go', 10)).toEqual([]);
   });
 
   it('returns nothing for a file with no structural edges', () => {
