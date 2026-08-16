@@ -366,14 +366,20 @@ program
   .requiredOption('-d, --dataset <files...>', 'dataset JSONL file(s)')
   .requiredOption('--predictions <file>', 'predictions JSONL produced by `sydes bench`')
   .option('-w, --workdir <dir>', 'harness workdir', '.sydes-bench/harness')
-  .option('-o, --out <dir>', 'harness output directory', 'runs/score')
+  .option('-o, --out <dir>', 'harness output directory (default: runs/score/<arm>)')
   .option('--python <bin>', 'python executable', 'python3')
   .option('--max-workers <n>', 'parallel workers', '4')
   .action(async (opts) => {
+    // Default the output under the arm the predictions came from. A shared default meant
+    // scoring the second arm silently overwrote the first arm's `final_report.json`, and the
+    // two numbers you were comparing were the same run twice.
+    const arm = path.basename(path.dirname(path.resolve(opts.predictions)));
+    const outDir = opts.out ?? path.join('runs/score', arm);
+
     const report = await runOfficialHarness({
       workdir: opts.workdir,
-      outputDir: opts.out,
-      logDir: path.join(opts.out, 'logs'),
+      outputDir: outDir,
+      logDir: path.join(outDir, 'logs'),
       datasetFiles: opts.dataset,
       patchFiles: [opts.predictions],
       python: opts.python,

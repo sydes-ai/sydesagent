@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -204,6 +205,33 @@ describe('instance run', () => {
 });
 
 describe('official harness wiring', () => {
+  /**
+   * The evaluator validates these directories before it starts and does not create them, so a
+   * config that names paths nobody has made fails as `Workdir not found` — which reads like a
+   * wrong path rather than a missing directory. `repo_dir` is checked for a real value rather
+   * than mere presence: it was emitted as `null`, the sibling test asserted only that the key
+   * existed, and the harness types the field as non-optional and rejected it.
+   */
+  it('creates every directory the evaluator requires, with a usable repo_dir', async () => {
+    const outputDir = path.join(scratch, 'score-dirs');
+    const workdir = path.join(scratch, 'harness-dirs');
+    const configPath = await writeHarnessConfig({
+      workdir,
+      outputDir,
+      logDir: path.join(outputDir, 'logs'),
+      datasetFiles: ['dataset.jsonl'],
+      patchFiles: ['predictions.jsonl'],
+    });
+
+    const config = JSON.parse(await readFile(configPath, 'utf8'));
+    expect(typeof config.repo_dir).toBe('string');
+    expect(config.repo_dir.length).toBeGreaterThan(0);
+
+    for (const dir of [config.workdir, config.output_dir, config.log_dir, config.repo_dir]) {
+      expect(existsSync(dir), `harness directory not created: ${dir}`).toBe(true);
+    }
+  });
+
   it('writes a config with the field names the evaluator expects', async () => {
     const outputDir = path.join(scratch, 'score');
     const configPath = await writeHarnessConfig({

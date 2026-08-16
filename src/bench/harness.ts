@@ -34,16 +34,34 @@ export interface HarnessReport {
 }
 
 export async function writeHarnessConfig(options: HarnessOptions): Promise<string> {
+  const workdir = path.resolve(options.workdir);
+  const outputDir = path.resolve(options.outputDir);
+  const logDir = path.resolve(options.logDir);
+  // The harness clones into `repo_dir` and rejects a null one: its CliArgs types the field as
+  // non-optional, so a null decodes to a warning and then fails validation further in. Default
+  // it under the workdir rather than making every caller supply a path they do not care about.
+  const repoDir = path.resolve(options.repoDir ?? path.join(workdir, 'repos'));
+
+  // All three are validated for existence before the run starts, and the harness does not
+  // create them. Scoring failed here as `Workdir not found`, which reads like a bad path
+  // rather than a directory nobody had made yet.
+  await Promise.all([
+    mkdir(workdir, { recursive: true }),
+    mkdir(outputDir, { recursive: true }),
+    mkdir(logDir, { recursive: true }),
+    mkdir(repoDir, { recursive: true }),
+  ]);
+
   const config = {
     mode: 'evaluation',
-    workdir: path.resolve(options.workdir),
+    workdir,
     patch_files: options.patchFiles.map((f) => path.resolve(f)),
     dataset_files: options.datasetFiles.map((f) => path.resolve(f)),
     force_build: options.forceBuild ?? false,
-    output_dir: path.resolve(options.outputDir),
+    output_dir: outputDir,
     specifics: [],
     skips: [],
-    repo_dir: options.repoDir ? path.resolve(options.repoDir) : null,
+    repo_dir: repoDir,
     need_clone: options.needClone ?? true,
     global_env: [],
     clear_env: true,
@@ -51,12 +69,11 @@ export async function writeHarnessConfig(options: HarnessOptions): Promise<strin
     max_workers: options.maxWorkers ?? 4,
     max_workers_build_image: options.maxWorkers ?? 4,
     max_workers_run_instance: options.maxWorkers ?? 4,
-    log_dir: path.resolve(options.logDir),
+    log_dir: logDir,
     log_level: 'INFO',
   };
 
-  const configPath = path.join(path.resolve(options.outputDir), 'harness-config.json');
-  await mkdir(path.dirname(configPath), { recursive: true });
+  const configPath = path.join(outputDir, 'harness-config.json');
   await writeFile(configPath, JSON.stringify(config, null, 2));
   return configPath;
 }
