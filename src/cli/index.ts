@@ -402,6 +402,9 @@ program
     }
     console.log(`resolved:   ${report.resolved}`);
     console.log(`unresolved: ${report.unresolved}`);
+    // Printed always, including zeros: a silent difference between "fixed nothing" and "never
+    // ran" is what made ten unresolved instances look like ten honest failures.
+    console.log(`incomplete: ${report.incomplete ?? 0}   errored: ${report.errored ?? 0}   empty patch: ${report.emptyPatch ?? 0}`);
     console.log(`report:     ${report.reportPath}`);
   });
 

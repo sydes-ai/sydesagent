@@ -29,6 +29,16 @@ export interface HarnessReport {
   reportPath: string;
   resolved?: number;
   unresolved?: number;
+  /**
+   * Instances the harness could not evaluate, as opposed to ones the patch failed to fix.
+   *
+   * These were invisible: the wrapper read only the resolved and unresolved arrays, so a
+   * container that never ran and a patch that fixed nothing produced the same output. That is
+   * a bad thing not to be able to tell apart when the answer is zero.
+   */
+  incomplete?: number;
+  errored?: number;
+  emptyPatch?: number;
   raw?: unknown;
   output: string;
 }
@@ -107,6 +117,9 @@ export async function runOfficialHarness(options: HarnessOptions): Promise<Harne
     resolved: Array.isArray(raw?.resolved_instances)
       ? raw.resolved_instances.length
       : raw?.resolved_instances,
+    incomplete: raw?.incomplete_instances,
+    errored: raw?.error_instances,
+    emptyPatch: raw?.empty_patch_instances,
     unresolved: Array.isArray(raw?.unresolved_instances)
       ? raw.unresolved_instances.length
       : raw?.unresolved_instances,

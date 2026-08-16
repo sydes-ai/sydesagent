@@ -14,12 +14,17 @@ regression check. They are not evidence that you did what was asked.
 
 So work in this order:
 1. Read the task and find the code it refers to.
-2. Write a test that asserts the behaviour the task describes, and run it. It must FAIL first.
+2. Read the existing test file for the code you are about to change, before writing anything.
+   It defines the conventions the graders use: which stream output is asserted on, the shape of
+   the table-driven cases, the exact strings. Guessing an output format when the answer is
+   sitting in the test file next to the code is the most common way to write a plausible change
+   that fixes nothing.
+3. Write a test that asserts the behaviour the task describes, and run it. It must FAIL first.
    A new test that passes before you have changed anything is asserting the wrong thing - fix
    the test until it fails for the right reason.
-3. Make the smallest change that turns that test green.
-4. Run the tests around what you changed, to catch what you broke.
-5. Call finish, summarising the change and naming the test that now passes.
+4. Make the smallest change that turns that test green.
+5. Run the tests around what you changed, to catch what you broke.
+6. Call finish, summarising the change and naming the test that now passes.
 
 Working rules:
 - Investigate before editing. Read the actual code; never edit a file you have not seen.
