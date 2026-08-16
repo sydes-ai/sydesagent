@@ -76,6 +76,7 @@ export const verifyTool: Tool<Record<string, never>> = {
       command: result.plan.command,
       ok: result.ok,
       ms: result.ms,
+      preexisting: result.preexisting.length,
     });
 
     const build = compiled ? `[build ok: ${compiled.plan.command}]\n` : '';

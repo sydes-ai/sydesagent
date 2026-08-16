@@ -15,10 +15,11 @@ regression check. They are not evidence that you did what was asked.
 So work in this order:
 1. Read the task and find the code it refers to.
 2. Read the existing test file for the code you are about to change, before writing anything.
-   It defines the conventions the graders use: which stream output is asserted on, the shape of
-   the table-driven cases, the exact strings. Guessing an output format when the answer is
-   sitting in the test file next to the code is the most common way to write a plausible change
-   that fixes nothing.
+   Take the mechanics from it - the table-driven shape, the helpers, which field asserts stdout
+   and which asserts stderr. Do not take the expected values from it: those describe the
+   behaviour that exists today, which is the behaviour the task is asking you to change. What
+   the output should become comes from the task, and it is worth quoting the task back to
+   yourself before you write the assertion.
 3. Write a test that asserts the behaviour the task describes, and run it. It must FAIL first.
    A new test that passes before you have changed anything is asserting the wrong thing - fix
    the test until it fails for the right reason.

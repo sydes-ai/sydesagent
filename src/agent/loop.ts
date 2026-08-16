@@ -10,6 +10,7 @@ import { ContextManager } from './context.js';
 import { Ledger } from './ledger.js';
 import { systemPrompt, taskPrompt } from './prompt.js';
 import { buildTools, toolSchemas, type Tool, type ToolContext } from './tools/index.js';
+import { detectProject } from './verify.js';
 import { pathsMentioned } from './tools/util.js';
 
 export interface AgentRunOptions {
@@ -38,11 +39,23 @@ export interface AgentRunResult {
   messages: Message[];
 }
 
-function summarise(root: string, fileCount: number, graph: GraphProvider): string {
+/**
+ * Includes the toolchain, because the model otherwise guesses it.
+ *
+ * An agent ran `pytest -q` against cli/cli — a Go repository — and spent a turn discovering
+ * that. `detectProject` already knew the answer; nothing was passing it along.
+ */
+function summarise(
+  root: string,
+  fileCount: number,
+  graph: GraphProvider,
+  project?: { kind: string; testAll: string },
+): string {
   const stats = graph.enabled
     ? ` Code graph: ${graph.stats.files} indexed files, ${graph.stats.symbols} symbols, ${graph.stats.edges} relationships.`
     : '';
-  return `${root} (${fileCount} files).${stats}`;
+  const toolchain = project ? ` Project: ${project.kind}; run tests with \`${project.testAll}\` or a narrower path.` : '';
+  return `${root} (${fileCount} files).${toolchain}${stats}`;
 }
 
 export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult> {
@@ -84,9 +97,10 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   });
   const byName = new Map<string, Tool>(tools.map((tool) => [tool.name, tool]));
   const schemas = toolSchemas(tools);
+  const project = await detectProject(root).catch(() => undefined);
 
   let messages: Message[] = [
-    { role: 'system', content: systemPrompt({ graph: graph.enabled, repoSummary: summarise(root, files.length, graph) }) },
+    { role: 'system', content: systemPrompt({ graph: graph.enabled, repoSummary: summarise(root, files.length, graph, project) }) },
     { role: 'user', content: taskPrompt(task) },
   ];
 
