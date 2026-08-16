@@ -143,7 +143,10 @@ export async function runInstance(
 
     // A final verification pass, so every run has evidence attached even if the model
     // forgot to ask for it.
-    if (result.editedFiles.length && !result.ledger.testRuns.length) {
+    // Runs whenever anything was edited, not only when the model never tested. A bash test
+    // run is unscoped and chosen by the model; this one is scoped to the change and filtered
+    // against the baseline, and it is the only verdict the metrics can trust.
+    if (result.editedFiles.length) {
       const verification = await runVerification(
         workspace.root,
         result.editedFiles,

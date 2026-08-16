@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseTestFailures } from '../verify.js';
 import type { Tool, ToolResult } from './types.js';
 
 const TEST_COMMAND = /\b(go test|npm (run )?test|npx vitest|yarn test|pnpm test|jest|vitest|pytest|cargo test|mvn test|gradle test)\b/;
@@ -34,25 +35,42 @@ export const bashTool: Tool<{ command: string; timeout_ms?: number }> = {
       timeoutMs: args.timeout_ms ?? ctx.config.bashTimeoutMs,
     });
 
+    const body = [result.stdout, result.stderr].filter(Boolean).join('\n');
+
+    // Models reach for bash to run tests far more often than for `run_tests`, so the baseline
+    // filtering has to live here too or it never applies. Without it the model is told its
+    // change broke a suite that was already red — cli/cli fails `go test ./...` at its own base
+    // commit — and it goes hunting for a regression that was never there.
+    let preexisting: string[] = [];
+    let ok = result.exitCode === 0;
     if (TEST_COMMAND.test(args.command)) {
-      ctx.ledger.testRuns.push({ command: args.command, ok: result.exitCode === 0, turn: ctx.turn });
+      const failures = parseTestFailures(body);
+      preexisting = [...failures].filter((f) => ctx.testBaseline?.has(f));
+      const introduced = [...failures].filter((f) => !ctx.testBaseline?.has(f));
+      ok =
+        ok ||
+        (ctx.testBaseline !== undefined && failures.size > 0 && introduced.length === 0);
+
+      ctx.ledger.testRuns.push({ command: args.command, ok, turn: ctx.turn });
       ctx.trace.emit({
         type: 'test_run',
         turn: ctx.turn,
         command: args.command,
-        ok: result.exitCode === 0,
+        ok,
         ms: result.ms,
       });
     }
 
-    const body = [result.stdout, result.stderr].filter(Boolean).join('\n');
+    const note = preexisting.length
+      ? `\n(${preexisting.length} of these failure(s) were already present at the base commit and are not yours)`
+      : '';
     const status = result.timedOut
       ? `timed out after ${result.ms}ms`
       : `exit ${result.exitCode} in ${result.ms}ms`;
 
     return {
-      content: `$ ${args.command}\n[${status}]\n${clip(body.trim(), 12_000) || '(no output)'}`,
-      isError: result.exitCode !== 0,
+      content: `$ ${args.command}\n[${status}]\n${clip(body.trim(), 12_000) || '(no output)'}${note}`,
+      isError: !ok,
     };
   },
 };

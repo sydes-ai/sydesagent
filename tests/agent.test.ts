@@ -25,7 +25,10 @@ afterEach(async () => {
   await rm(workspace, { recursive: true, force: true });
 });
 
-async function run(script: MockScript, options: { graph?: boolean; config?: Partial<AgentConfig> } = {}) {
+async function run(
+  script: MockScript,
+  options: { graph?: boolean; config?: Partial<AgentConfig>; testBaseline?: Set<string> } = {},
+) {
   const useGraph = options.graph ?? true;
   const graph: GraphProvider = useGraph ? new LocalGraphProvider(workspace) : new NullGraphProvider();
   await graph.index();
@@ -38,6 +41,7 @@ async function run(script: MockScript, options: { graph?: boolean; config?: Part
     graph,
     exec: new LocalExec(workspace),
     config: loadAgentConfig({ graph: useGraph, ...options.config }),
+    testBaseline: options.testBaseline,
   });
   return { result, llm, graph };
 }
@@ -567,5 +571,42 @@ describe('token budget', () => {
     const calls = result.trace.ofType('model_call');
     const cacheRead = calls.reduce((sum, c) => sum + ((c.cacheReadTokens as number) ?? 0), 0);
     expect(cacheRead).toBeGreaterThan(config_ceiling * 25);
+  });
+});
+
+
+/**
+ * Baseline filtering has to apply to bash, because that is where models actually run tests.
+ *
+ * The first clean smoke run tested via `bash("gofmt -l . | wc -l && go test ./...")`, never
+ * touching `run_tests` — so the filtering added to `runVerification` did not apply, and the
+ * model was told its change broke a suite that was red before it started.
+ */
+describe('pre-existing failures via bash', () => {
+  const GO_FAIL = 'FAIL\tgithub.com/x/y/pkg/broken\t0.1s';
+
+  it('does not blame the change for a failure the baseline already had', async () => {
+    const { llm, result } = await run(
+      [
+        { toolCalls: [{ name: 'bash', arguments: { command: `echo "${GO_FAIL}"; go test ./...; false` } }] },
+        { toolCalls: [{ name: 'finish', arguments: { summary: 'done' } }] },
+      ],
+      { testBaseline: new Set(['github.com/x/y/pkg/broken']) },
+    );
+
+    expect(toolResultAt(llm, 0)).toContain('already present at the base commit');
+    expect(result.trace.ofType('test_run')[0]?.ok).toBe(true);
+  });
+
+  it('still blames it for a failure the baseline did not have', async () => {
+    const { result } = await run(
+      [
+        { toolCalls: [{ name: 'bash', arguments: { command: 'echo "FAIL\tgithub.com/x/y/pkg/fresh"; go test ./...; false' } }] },
+        { toolCalls: [{ name: 'finish', arguments: { summary: 'done' } }] },
+      ],
+      { testBaseline: new Set(['github.com/x/y/pkg/broken']) },
+    );
+
+    expect(result.trace.ofType('test_run')[0]?.ok).toBe(false);
   });
 });
