@@ -203,7 +203,11 @@ program
     'local | docker:<image>; image accepts {org} {repo} {number} {id} placeholders',
     'local',
   )
-  .option('--container-workdir <path>', 'repo path inside the instance image', '/workspace')
+  .option(
+    '--container-workdir <path>',
+    'repo path inside the instance image; accepts the same placeholders as --exec',
+    '/home/{repo}',
+  )
   .option('--max-turns <n>', 'turn budget per instance')
   .option('--include-tests', 'keep test-file changes in the patch')
   .option('-j, --workers <n>', 'instances to run concurrently', '1')

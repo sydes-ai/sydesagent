@@ -67,7 +67,10 @@ async function buildExec(
     return { exec: new LocalExec(root), cleanup: async () => {} };
   }
   const image = resolveImage(options.exec.slice('docker:'.length), instance);
-  const workdir = options.containerWorkdir ?? '/workspace';
+  // Same placeholders as the image: the official images check the repository out at
+  // `/home/<repo>`, so a fixed path works for exactly one repository and silently points at
+  // nothing for the next one.
+  const workdir = resolveImage(options.containerWorkdir ?? '/home/{repo}', instance);
   const handle = await startContainer(image, workdir, root);
   // The image holds the prepared repository and its dependencies; take the host copy from it
   // so the graph indexes exactly what the tests will run against.

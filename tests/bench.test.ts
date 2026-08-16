@@ -224,6 +224,15 @@ describe('per-instance execution images', () => {
   it('leaves a plain image name alone, so a fixed image still works', () => {
     expect(resolveImage('golang:1.22', instance)).toBe('golang:1.22');
   });
+
+  // The images check the repository out at /home/<repo>, so the container workdir is per-repo
+  // for the same reason the image tag is per-instance.
+  it('resolves the container workdir the same way', () => {
+    expect(resolveImage('/home/{repo}', instance)).toBe('/home/cli');
+    expect(
+      resolveImage('/home/{repo}', { org: 'mui', repo: 'material-ui', number: 1 } as BenchInstance),
+    ).toBe('/home/material-ui');
+  });
 });
 
 describe('official harness wiring', () => {
