@@ -42,7 +42,16 @@ function recordSurfaced(ctx: ToolContext, paths: string[]): void {
   }
 }
 
-/** E1 - structural footer after a successful read. */
+/**
+ * E1 - structural footer after a successful read.
+ *
+ * Two answers, because they are different questions. The neighbourhood says what is attached
+ * to the symbols in this file, which is how the model navigates. The related-file list says
+ * what a change here is likely to touch, fusing structure with the repository's own history —
+ * and it is the only part of this measured against gold patches. History is why the second
+ * list is computed even when the first is empty: a file with no structural neighbours can
+ * still have moved with others a dozen times.
+ */
 export function enrichRead(relPath: string, ctx: ToolContext): string {
   if (!ctx.config.enrichment.readFooter || !ctx.graph.enabled) return '';
   if (ctx.ledger.expansions.has(relPath)) return '';
@@ -57,26 +66,53 @@ export function enrichRead(relPath: string, ctx: ToolContext): string {
     results: result.count,
     surfaced: result.surfacedFiles,
   });
-  if (!result.groups?.length) return '';
 
-  ctx.ledger.expansions.add(relPath);
-  const { text, suppressed } = renderFresh(
-    // "Defined here" duplicates the file the model just read in full.
-    result.groups.filter((g) => g.label !== 'Defined here'),
-    ctx,
-  );
-  if (!text) {
+  const related = ctx.graph.relatedFiles(relPath, ctx.config.enrichment.relatedFiles);
+  ctx.trace.emit({
+    type: 'graph_lookup',
+    turn: ctx.turn,
+    kind: 'related:auto',
+    anchor: relPath,
+    ms: related.ms,
+    results: related.count,
+    surfaced: related.surfacedFiles,
+  });
+
+  // Anything the neighbourhood already named does not need naming twice.
+  const alreadyShown = new Set(result.surfacedFiles);
+  const freshRelated = related.surfacedFiles.filter((f) => !alreadyShown.has(f) && f !== relPath);
+
+  const { text, suppressed } = result.groups?.length
+    ? renderFresh(
+        // "Defined here" duplicates the file the model just read in full.
+        result.groups.filter((g) => g.label !== 'Defined here'),
+        ctx,
+      )
+    : { text: '', suppressed: 0 };
+
+  if (!text && !freshRelated.length) {
     ctx.trace.emit({ type: 'enrichment', turn: ctx.turn, kind: 'read_footer', bytes: 0, suppressed: true });
     return '';
   }
 
+  ctx.ledger.expansions.add(relPath);
   const trimmed = trimToLines(text, ctx.config.enrichment.maxFooterLines);
-  const body =
-    `\n\n--- structure (from the code graph, not the file) ---\n${trimmed.text}` +
-    (trimmed.truncated ? `\n  … +${trimmed.truncated} more (graph_expand for the rest)` : '') +
-    (suppressed ? `\n  (${suppressed} relationship(s) already shown earlier)` : '');
+  const sections: string[] = [];
+  if (trimmed.text) {
+    sections.push(
+      `--- structure (from the code graph, not the file) ---\n${trimmed.text}` +
+        (trimmed.truncated ? `\n  … +${trimmed.truncated} more (graph_expand for the rest)` : '') +
+        (suppressed ? `\n  (${suppressed} relationship(s) already shown earlier)` : ''),
+    );
+  }
+  if (freshRelated.length) {
+    sections.push(
+      `--- usually changes with this file ---\n${freshRelated.map((f) => `  ${f}`).join('\n')}`,
+    );
+  }
+  const body = `\n\n${sections.join('\n\n')}`;
 
-  recordSurfaced(ctx, result.surfacedFiles);
+  recordSurfaced(ctx, [...result.surfacedFiles, ...freshRelated]);
   ctx.trace.emit({
     type: 'enrichment',
     turn: ctx.turn,

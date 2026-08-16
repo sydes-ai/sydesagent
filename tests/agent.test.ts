@@ -154,6 +154,31 @@ describe('agent loop', () => {
   });
 
   /**
+   * The footer now answers two questions, and this is the one the offline benchmark actually
+   * scored: not "what is attached to these symbols" but "what will a change here touch",
+   * fusing structure with the repository's own history. It arrives inside a tool result the
+   * model is already paying for, so it costs no extra turn — which is the whole mechanism by
+   * which the graph is supposed to replace exploration rather than decorate it.
+   */
+  it('lists what a change to the file would likely touch', async () => {
+    const { llm } = await run([
+      { toolCalls: [{ name: 'read_file', arguments: { path: 'pkg/handler/pokedex.go' } }] },
+      { toolCalls: [{ name: 'finish', arguments: { summary: 'done' } }] },
+    ]);
+
+    const body = toolResultAt(llm, 0);
+    expect(body).toContain('--- usually changes with this file ---');
+    // Never the file just read, and never a repeat of what the neighbourhood already named.
+    const listed = body
+      .split('--- usually changes with this file ---')[1]
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    expect(listed).not.toContain('pkg/handler/pokedex.go');
+    expect(new Set(listed).size).toBe(listed.length);
+  });
+
+  /**
    * Real models pass a defensive whole-file range (`start_line: 1, end_line: 400` for a
    * 48-line file) rather than omitting the arguments. Treating that as "wants a slice"
    * silently disabled the structural footer and repeat-read dedup in every live run, while

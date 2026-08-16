@@ -8,6 +8,7 @@ import path from 'node:path';
 import { formatGroups, formatNeighborhood, formatNodes, formatPathCandidates } from './format.js';
 import { indexRepo, reindexFiles } from './indexer.js';
 import type { GraphNode } from './model.js';
+import { buildFileGraph, relatedFiles, type FileGraph } from './rank.js';
 import { GraphQuery, type Group } from './query.js';
 import type { GraphStats, GraphStore } from './store.js';
 import { envelopeFor, fileOutline, type EnvelopeParts } from './outline.js';
@@ -40,6 +41,15 @@ export interface GraphProvider {
   impact(changedFiles: string[]): GraphResult & { testFiles: string[] };
   pathCandidates(badPath: string): GraphResult;
   symbolCandidates(term: string): GraphResult;
+  /**
+   * Files likely to change alongside this one, by the ranking the benchmark validated.
+   *
+   * Distinct from `expand`, which answers "what is structurally attached to this symbol" and
+   * is what the model navigates by. This answers "what else will this change touch", fuses
+   * structure with the repository's own history, and is the only retrieval here measured
+   * against gold patches — 1.8x the recall of a directory listing at k=5.
+   */
+  relatedFiles(anchor: string, limit?: number): GraphResult;
   /** A file's shape without its bodies - the substitutive use of the graph. */
   outline(file: string): string;
   /** Contract boundary around one symbol: skeleton plus one-hop signatures. */
@@ -79,6 +89,7 @@ export class LocalGraphProvider implements GraphProvider {
   readonly enabled = true;
   private store?: GraphStore;
   private query?: GraphQuery;
+  private fileGraph?: FileGraph;
 
   constructor(
     private readonly root: string,
@@ -92,6 +103,37 @@ export class LocalGraphProvider implements GraphProvider {
   async index(): Promise<void> {
     this.store = await indexRepo(this.root);
     this.query = new GraphQuery(this.store);
+    this.fileGraph = buildFileGraph(this.store);
+  }
+
+  /**
+   * The validated ranking, exposed to the agent.
+   *
+   * Anchored on a file rather than a symbol: the benchmark scored "given one file of a change,
+   * find the rest", and that is the question this answers. A symbol anchor is reduced to its
+   * file so the model can pass either.
+   */
+  relatedFiles(rawAnchor: string, limit = 5): GraphResult {
+    const { value, ms } = timed(() => {
+      const store = this.store;
+      const fileGraph = this.fileGraph;
+      if (!store || !fileGraph) throw new Error('graph not indexed; call index() first');
+
+      const anchor = this.normalize(rawAnchor);
+      const file = store.knownFiles.has(anchor)
+        ? anchor
+        : this.q().resolveAnchor(anchor).node?.file;
+      if (!file) return { text: '', surfacedFiles: [], count: 0 };
+
+      const files = relatedFiles(store, fileGraph, file, limit);
+      if (!files.length) return { text: '', surfacedFiles: [], count: 0 };
+      return {
+        text: `Files that usually change with ${file}:\n${files.map((f) => `  ${f}`).join('\n')}`,
+        surfacedFiles: files,
+        count: files.length,
+      };
+    });
+    return { ...value, ms };
   }
 
   private q(): GraphQuery {
@@ -305,6 +347,10 @@ export class NullGraphProvider implements GraphProvider {
   pathCandidates(): GraphResult {
     return this.empty();
   }
+  relatedFiles(): GraphResult {
+    return this.empty();
+  }
+
   symbolCandidates(): GraphResult {
     return this.empty();
   }

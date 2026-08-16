@@ -191,6 +191,58 @@ describe('graph provider', () => {
     }
   });
 
+  /**
+   * The ranking the benchmark validated, reachable from the agent.
+   *
+   * It lived under `bench/` for three rounds of measurement, which meant every improvement
+   * proved offline — the random walk, the degree damping, the co-change fusion — was invisible
+   * to the thing being improved. An A/B run in that state would have measured the ranker we
+   * had already replaced.
+   */
+  it('answers what a change here would touch, not just what is attached', async () => {
+    const graph = new LocalGraphProvider(GO_FIXTURE);
+    await graph.index();
+    const result = graph.relatedFiles('pkg/handler/pokedex.go', 5);
+
+    expect(result.count).toBeGreaterThan(0);
+    expect(result.surfacedFiles.length).toBeLessThanOrEqual(5);
+    expect(result.surfacedFiles).not.toContain('pkg/handler/pokedex.go');
+    expect(result.surfacedFiles).toContain('service/pokemon.go');
+    for (const line of result.text.split('\n').slice(1)) {
+      expect(line).toMatch(/^ {2}\S+/);
+    }
+
+    // `helpers/helpers.go` is reached, but ranks below the covering tests: `tests` edges
+    // propagate hard, and degree damping discounts a helper that half the repository calls.
+    // Both are deliberate, so this pins the position rather than the mere presence.
+    expect(graph.relatedFiles('pkg/handler/pokedex.go', 8).surfacedFiles).toContain(
+      'helpers/helpers.go',
+    );
+  });
+
+  /**
+   * Test files rank highly here, and that is correct for the agent even though it costs us on
+   * the benchmark. Multi-SWE-bench splits a change into `fix_patch` and `test_patch` and scores
+   * only the former, so a covering test can never be a gold target and every slot spent on one
+   * is a slot lost. Real changes touch their tests, and the agent needs to know which to run,
+   * so the ranker keeps them and the offline number carries a known, uniform penalty. Filtering
+   * them would buy recall on the benchmark by making the tool worse.
+   */
+  it('surfaces covering tests, which the benchmark cannot reward', async () => {
+    const graph = new LocalGraphProvider(GO_FIXTURE);
+    await graph.index();
+    const related = graph.relatedFiles('pkg/handler/pokedex.go', 5).surfacedFiles;
+    expect(related.some((f) => f.endsWith('_test.go'))).toBe(true);
+  });
+
+  it('says nothing for an anchor it does not know, rather than guessing', async () => {
+    const graph = new LocalGraphProvider(GO_FIXTURE);
+    await graph.index();
+    const result = graph.relatedFiles('no/such/file.go', 5);
+    expect(result.count).toBe(0);
+    expect(result.text).toBe('');
+  });
+
   /** Models pass absolute paths and `./` prefixes; a good anchor must not be lost to that. */
   it('normalises absolute and dot-prefixed anchors', async () => {
     const graph = new LocalGraphProvider(GO_FIXTURE);

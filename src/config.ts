@@ -18,6 +18,14 @@ export const EnrichmentSchema = z.object({
   symbolCheck: z.boolean().default(true),
   /** Hard cap on footer size, in lines. */
   maxFooterLines: z.number().int().positive().default(12),
+  /**
+   * How many likely-to-change-together files to list after a read.
+   *
+   * Five because that is the cutoff the offline evaluation optimised: at k=5 the fused ranking
+   * recovers 26% of the remaining change surface against a directory listing's 14%. Showing
+   * more buys recall the model pays for in tokens on every read.
+   */
+  relatedFiles: z.number().int().nonnegative().default(5),
 });
 
 export const AgentConfigSchema = z.object({
