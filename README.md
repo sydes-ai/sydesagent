@@ -191,6 +191,28 @@ folder") is scored alongside it on every run, because a ranking number without a
 nothing. Seconds per instance, zero cost — so resolution quality can be iterated on directly
 instead of inferred from agent behaviour.
 
+Measured over 516 instances across 7 repositories, recall@5:
+
+| strategy | recall@5 |
+| --- | --- |
+| directory baseline | 14.1% |
+| call graph alone | 15.7% |
+| co-change history alone | 22.8% |
+| **both, fused** | **26.0%** |
+
+Three results here are worth more than the headline. **The call graph on its own barely beats
+a folder listing** — 15.7% against 14.1%, which is the founding premise tested honestly and
+very nearly failing. **History beats structure** by a wide margin, which was not the expected
+outcome, though it is measured on mature repositories where co-change is at its strongest and
+it degrades to nothing on a shallow clone or a file the agent just created. And **fusing all
+four signals scored worse than fusing the best two** (23.3%): reciprocal rank fusion gives
+every input an equal vote, so a weak ranking displaces a good one rather than merely failing
+to help.
+
+The ceiling is low and worth stating. A hypothetical perfect router — one picking the ideal
+strategy per instance — reaches 34.7%, and 27% of instances return nothing useful at all in
+the top 5. So the remaining gap is not in how the signals are weighted; it is in the signals.
+
 ## Cost
 
 An agent loop re-sends the whole conversation every turn, so a token introduced at turn `t` of
@@ -264,11 +286,25 @@ fixtures/       small Go and TS repos used as golden graphs and agent workspaces
 
 Working: the graph, the agent loop and its tools, all five enrichments, the ledger, the
 telemetry and A/B report, cost and cache accounting, prompt caching, the token-free graph
-benchmark, the change envelope, the symbol and compiler oracles, verification, the Multi-SWE-bench runner and the
-harness wrapper. 86 tests cover them, including a benchmark instance and a graph evaluation
-that both run end-to-end offline against a local git mirror.
+benchmark, the change envelope, the symbol and compiler oracles, verification, the
+Multi-SWE-bench runner and the harness wrapper. 135 tests cover them, including a benchmark
+instance and a graph evaluation that both run end-to-end offline against a local git mirror.
 
-Not yet done: the experiment itself. It needs a model strong enough to use tools well — the
-local `llama3.1:8b` smoke run exercises the plumbing but is not evidence either way. Java, Rust
-and C/C++ adapters are pending, as is the learned relevance prior, which the spec places in the
-future.
+**The agent-level experiment has not produced a valid result yet.** The offline retrieval
+numbers above are sound. The paired A/B is not, and the reason is worth recording: the first
+attempt ran to completion and produced a clean-looking 41% turn reduction that turned out to be
+an artifact. Three separate limits were binding at once — a 40-turn cap, a token budget that
+counted re-read cache, and a test verdict read from the exit code of a suite that fails at its
+own base commit. The token budget was the worst of them, because the cached prefix grows with
+turn count and the graph arm carries the larger prefix: it was cut off sooner *because* it
+carried more context, then credited for finishing in fewer turns.
+
+What survives from that run is behavioural and does not depend on the build working: search
+calls fell 58%, file reads rose 19% — the graph replacing exploration rather than compressing
+it — and the graph arm discovered 6.2 covering test files per instance against the baseline's
+zero. The efficiency headline does not survive, and correctness was 0/10 in both arms.
+
+Also pending: Java, Rust and C/C++ adapters, and the learned relevance prior, which the spec
+places in the future. The offline ceiling above is the argument for the latter — weighting the
+signals better cannot pass 34.7%, so the next real gain has to come from a signal that
+generalizes history to files with no shared history.
