@@ -13,14 +13,13 @@ import { CONFIDENCE_FACTOR, PROPAGATION, type GraphEdge } from '../graph/model.j
 import type { GraphStore } from '../graph/store.js';
 
 /**
- * The four base signals, their fusion, and the fusion with each signal removed.
+ * The base signals, two fusions of them, and the fusion with each component removed.
  *
- * The leave-one-out variants exist because the first full run made the question unavoidable:
- * the fusion nearly doubled the directory baseline, but the structural graph on its own barely
- * beat it (9.5% against 8.2% at recall@|G|). A signal that is weak alone can still be decisive
- * in combination, or it can be dead weight the other three carry — and the aggregate cannot
- * tell those apart. `no-graph` scoring the same as `combined` would mean this project's central
- * claim is false and the real result is "git history plus directory structure".
+ * The leave-one-out variants answered the question they were added for and then raised a
+ * better one. Removing the graph cost 11% of the fused result and removing history cost 14%,
+ * so both earn their place. But removing locality, package membership, or the backward-only
+ * walk each *improved* it — equal-vote fusion means a weak ranking displaces a good one rather
+ * than merely failing to help. `lean` is the consequence: the two signals that survived.
  */
 export type Strategy =
   | 'graph'
@@ -30,15 +29,34 @@ export type Strategy =
   | 'cochange'
   | 'packages'
   | 'combined'
+  | 'lean'
   | 'no-graph'
-  | 'no-dependents'
   | 'no-directory'
   | 'no-cochange'
   | 'no-packages';
 
-/** The components fused by `combined`, in the order their rankings are passed to RRF. */
-export const COMPONENTS = ['graph', 'dependents', 'packages', 'cochange', 'directory'] as const;
+/**
+ * The components fused by `combined`.
+ *
+ * `dependents` — a backward-only walk — was measured here and removed. On its own it was the
+ * weakest signal of the seven, and dropping it from the fusion *improved* the result, so it
+ * was contributing rank noise rather than information. Direction still matters and is still
+ * used: the bidirectional walk traverses both maps. What the measurement rejects is scoring
+ * the backward direction as a separate opinion and giving it an equal vote.
+ */
+export const COMPONENTS = ['graph', 'packages', 'cochange', 'directory'] as const;
 export type Component = (typeof COMPONENTS)[number];
+
+/**
+ * The two signals the ablation showed the fusion actually depends on.
+ *
+ * Reciprocal rank fusion gives every input an equal vote, so a weak ranking does not merely
+ * fail to help — it displaces a good one. Removing locality and package membership each
+ * *raised* recall, and they are near-duplicates of each other, so between them they were
+ * casting two correlated votes for the weakest evidence available. This pairs the strongest
+ * structural signal with the strongest historical one and nothing else.
+ */
+export const LEAN = ['graph', 'cochange'] as const;
 
 export const STRATEGIES: Strategy[] = [
   'graph',
@@ -48,8 +66,8 @@ export const STRATEGIES: Strategy[] = [
   'cochange',
   'packages',
   'combined',
+  'lean',
   'no-graph',
-  'no-dependents',
   'no-directory',
   'no-cochange',
   'no-packages',
@@ -392,7 +410,6 @@ export function rankAll(
 ): Record<Strategy, string[]> {
   const parts: Record<Component, string[]> = {
     graph: graphRankedPPR(ctx.fileGraph, anchor, limit),
-    dependents: dependentsRanked(ctx.fileGraph, anchor, limit),
     // On Go these are the signal the call graph structurally cannot see: one package is one
     // directory, so its files share a namespace whether or not either calls the other.
     packages: packageMatesOf(ctx.fileGraph, anchor, limit),
@@ -409,13 +426,13 @@ export function rankAll(
   return {
     graph: parts.graph,
     'graph-bfs': graphRankedBFS(ctx.fileGraph, anchor, limit),
-    dependents: parts.dependents,
+    dependents: dependentsRanked(ctx.fileGraph, anchor, limit),
     directory: parts.directory,
     cochange: parts.cochange,
     packages: parts.packages,
     combined: fuse(COMPONENTS.map((c) => parts[c]), limit),
+    lean: fuse(LEAN.map((c) => parts[c]), limit),
     'no-graph': without('graph'),
-    'no-dependents': without('dependents'),
     'no-directory': without('directory'),
     'no-cochange': without('cochange'),
     'no-packages': without('packages'),

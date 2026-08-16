@@ -16,24 +16,29 @@ export interface CoChangeOptions {
   /** How far back to read. Older history is less predictive and costs time. */
   maxCommits?: number;
   /**
-   * Commits touching more than this are ignored. Merges, formatting sweeps and codemods
-   * touch hundreds of files and couple everything to everything, which is noise, not signal.
+   * A hard ceiling on commit size, for cost rather than for signal.
+   *
+   * This used to be 25 and was the whole defence against noise, which discarded far too much:
+   * one repository scored zero co-change because its ordinary commits are large. Commit size
+   * is now handled by weighting rather than by a cliff, and this only bounds the quadratic
+   * pair generation of a thousand-file codemod.
    */
   maxFilesPerCommit?: number;
 }
 
 export interface CoChangeIndex {
-  /** file -> co-changed file -> number of commits containing both. */
+  /** file -> co-changed file -> summed weight of the commits containing both. */
   pairs: Map<string, Map<string, number>>;
-  /** file -> number of commits touching it, for normalising. */
+  /** file -> summed weight of the commits touching it, for normalising. */
   commits: Map<string, number>;
-  commitsRead: number;
+  /** Summed weight of every commit read. Not a count — see the weighting in `buildCoChange`. */
+  totalWeight: number;
 }
 
 export const EMPTY_COCHANGE: CoChangeIndex = {
   pairs: new Map(),
   commits: new Map(),
-  commitsRead: 0,
+  totalWeight: 0,
 };
 
 function readLog(root: string, maxCommits: number): Promise<string | undefined> {
@@ -52,19 +57,19 @@ export async function buildCoChange(
   options: CoChangeOptions = {},
 ): Promise<CoChangeIndex> {
   const maxCommits = options.maxCommits ?? 3000;
-  const maxFiles = options.maxFilesPerCommit ?? 25;
+  const maxFiles = options.maxFilesPerCommit ?? 400;
 
   const log = await readLog(root, maxCommits);
   if (!log) return EMPTY_COCHANGE;
 
   const pairs = new Map<string, Map<string, number>>();
   const commits = new Map<string, number>();
-  let commitsRead = 0;
+  let totalWeight = 0;
 
-  const link = (a: string, b: string) => {
+  const link = (a: string, b: string, weight: number) => {
     let row = pairs.get(a);
     if (!row) pairs.set(a, (row = new Map()));
-    row.set(b, (row.get(b) ?? 0) + 1);
+    row.set(b, (row.get(b) ?? 0) + weight);
   };
 
   // `%x00` writes a NUL before each commit's file list, so commits split cleanly even when a
@@ -76,17 +81,23 @@ export async function buildCoChange(
       .filter(Boolean);
     if (files.length < 2 || files.length > maxFiles) continue;
 
-    commitsRead++;
-    for (const file of files) commits.set(file, (commits.get(file) ?? 0) + 1);
+    // Adamic-Adar: a commit touching two files says those two belong together; a commit
+    // touching eighty says almost nothing about any particular pair within it. Weighting by
+    // 1/log(n) expresses that as a gradient, where the old 25-file cutoff expressed it as a
+    // cliff that threw away every large commit — and with it every repository whose ordinary
+    // commits are large.
+    const weight = 1 / Math.log(1 + files.length);
+    totalWeight += weight;
+    for (const file of files) commits.set(file, (commits.get(file) ?? 0) + weight);
     for (let i = 0; i < files.length; i++) {
       for (let j = i + 1; j < files.length; j++) {
-        link(files[i], files[j]);
-        link(files[j], files[i]);
+        link(files[i], files[j], weight);
+        link(files[j], files[i], weight);
       }
     }
   }
 
-  return { pairs, commits, commitsRead };
+  return { pairs, commits, totalWeight };
 }
 
 /**
@@ -102,15 +113,15 @@ export function coChangeNeighbours(
   limit: number,
 ): { file: string; score: number }[] {
   const row = index.pairs.get(file);
-  if (!row || !index.commitsRead) return [];
-  const own = index.commits.get(file) ?? 1;
+  if (!row || !index.totalWeight) return [];
+  const own = index.commits.get(file) || 1;
 
   const scored: { file: string; score: number }[] = [];
   for (const [other, together] of row) {
-    const otherCount = index.commits.get(other) ?? 1;
+    const otherCount = index.commits.get(other) || 1;
     // lift = P(a,b) / (P(a)P(b)), computed on commit counts.
-    const lift = (together * index.commitsRead) / (own * otherCount);
-    // A single shared commit is weak evidence however high its lift; damp by support.
+    const lift = (together * index.totalWeight) / (own * otherCount);
+    // Thin evidence is weak however high its lift; damp by how much support there is.
     scored.push({ file: other, score: lift * Math.log1p(together) });
   }
 
