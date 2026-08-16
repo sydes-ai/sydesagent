@@ -63,7 +63,11 @@ export async function writeHarnessConfig(options: HarnessOptions): Promise<strin
 
 export async function runOfficialHarness(options: HarnessOptions): Promise<HarnessReport> {
   const configPath = await writeHarnessConfig(options);
-  const python = options.python ?? 'python';
+  // `python3` rather than `python`: Debian and Ubuntu ship no bare `python`, and macOS
+  // dropped it in 12.3. A shell alias does not rescue this — commands are spawned through
+  // `/bin/sh -c`, which never reads interactive aliases, so the failure looked like a missing
+  // harness rather than a missing interpreter.
+  const python = options.python ?? 'python3';
   const exec = new LocalExec(process.cwd(), 3_600_000);
 
   const result = await exec.run(

@@ -367,7 +367,7 @@ program
   .requiredOption('--predictions <file>', 'predictions JSONL produced by `sydes bench`')
   .option('-w, --workdir <dir>', 'harness workdir', '.sydes-bench/harness')
   .option('-o, --out <dir>', 'harness output directory', 'runs/score')
-  .option('--python <bin>', 'python executable', 'python')
+  .option('--python <bin>', 'python executable', 'python3')
   .option('--max-workers <n>', 'parallel workers', '4')
   .action(async (opts) => {
     const report = await runOfficialHarness({
