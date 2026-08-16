@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadDataset, taskText, type BenchInstance } from '../src/bench/dataset.js';
 import { writeHarnessConfig } from '../src/bench/harness.js';
-import { runInstance } from '../src/bench/runner.js';
+import { resolveImage, runInstance } from '../src/bench/runner.js';
 import { extractPatch } from '../src/bench/workspace.js';
 import { loadAgentConfig } from '../src/config.js';
 import { LocalExec } from '../src/exec/local.js';
@@ -202,6 +202,28 @@ describe('instance run', () => {
     const withTests = await extractPatch(workspace, { excludeTests: false });
     expect(withTests).toContain('service/extra_test.go');
   }, 120_000);
+});
+
+/**
+ * The official harness builds one image per pull request — `mswebench/cli_m_cli:pr-10154`, not
+ * one image per repository. A single `--exec docker:<image>` therefore cannot serve a sweep,
+ * and because `local` is the default, an entire A/B ran on the host instead: cli/cli could not
+ * build there, all 27 test runs failed, and the verification loop was inert for the whole
+ * experiment while reporting nothing unusual.
+ */
+describe('per-instance execution images', () => {
+  const instance = { org: 'cli', repo: 'cli', number: 10154 } as BenchInstance;
+
+  it('substitutes the instance into an image template', () => {
+    expect(resolveImage('mswebench/{org}_m_{repo}:pr-{number}', instance)).toBe(
+      'mswebench/cli_m_cli:pr-10154',
+    );
+    expect(resolveImage('local/{id}', instance)).toBe('local/cli__cli-10154');
+  });
+
+  it('leaves a plain image name alone, so a fixed image still works', () => {
+    expect(resolveImage('golang:1.22', instance)).toBe('golang:1.22');
+  });
 });
 
 describe('official harness wiring', () => {

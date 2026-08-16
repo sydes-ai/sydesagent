@@ -198,7 +198,11 @@ program
   .option('--ids <ids...>', 'filter by instance id (org__repo-number)')
   .option('-w, --workdir <dir>', 'clone and workspace cache', '.sydes-bench')
   .option('-o, --out <dir>', 'run output directory', 'runs/bench')
-  .option('--exec <mode>', 'local | docker:<image>', 'local')
+  .option(
+    '--exec <mode>',
+    'local | docker:<image>; image accepts {org} {repo} {number} {id} placeholders',
+    'local',
+  )
   .option('--container-workdir <path>', 'repo path inside the instance image', '/workspace')
   .option('--max-turns <n>', 'turn budget per instance')
   .option('--include-tests', 'keep test-file changes in the patch')
