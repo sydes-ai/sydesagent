@@ -116,11 +116,14 @@ export async function runInstance(
     // The same reasoning as the compile oracle above, applied to tests. Real repositories are
     // not green: cli/cli fails `go test ./...` at its own base commit, so an exit-code verdict
     // marks every edit a failure. Record what was already broken and judge only what changed.
+    // A whole-repository suite, not a scoped one: cli/cli's takes minutes, and the per-command
+    // bash timeout is sized for what a model asks for interactively. A truncated baseline is
+    // worse than none — it records some pre-existing failures and blames the agent for the rest.
     const testBaseline = await baselineTestFailures(
       workspace.root,
       graph,
       exec,
-      config.bashTimeoutMs,
+      Math.max(config.bashTimeoutMs, 15 * 60_000),
     );
     if (testBaseline?.size) {
       options.onEvent?.(

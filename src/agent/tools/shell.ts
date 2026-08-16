@@ -58,6 +58,7 @@ export const bashTool: Tool<{ command: string; timeout_ms?: number }> = {
         command: args.command,
         ok,
         ms: result.ms,
+        preexisting: preexisting.length,
       });
     }
 

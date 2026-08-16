@@ -16,6 +16,7 @@ const start: TraceEvent = {
   task: 'fix it',
   repo: '/repo',
   graph: true,
+      testBaseline: null,
   provider: 'mock',
   model: 'mock-model',
   ts: 0,

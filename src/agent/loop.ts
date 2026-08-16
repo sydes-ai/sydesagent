@@ -62,6 +62,9 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     task,
     repo: root,
     graph: graph.enabled,
+    // Recorded so a baseline that silently failed to compute is visible in the trace rather
+    // than indistinguishable from a repository that was green to begin with.
+    testBaseline: options.testBaseline?.size ?? null,
     provider: llm.name,
     model: llm.model,
     ts: Date.now(),
