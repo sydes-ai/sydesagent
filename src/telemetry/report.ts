@@ -100,10 +100,18 @@ export function verdict(baseline: AggregateMetrics, candidate: AggregateMetrics)
       correctnessDelta,
     };
   }
+  // Zero resolved in both arms is the absence of a correctness signal, not evidence of
+  // parity — you can resolve nothing in no turns at all. This printed "at equal or better
+  // correctness" for three consecutive runs in which nothing had been scored, and once for a
+  // run whose two arms were the same cached report read twice.
+  const measuredCorrectness = baseline.resolved > 0 || candidate.resolved > 0;
   if (explorationDelta < -0.05) {
     return {
-      helped: true,
-      reason: `exploration fell ${(explorationDelta * -100).toFixed(0)}% at equal or better correctness`,
+      helped: measuredCorrectness,
+      reason: measuredCorrectness
+        ? `exploration fell ${(explorationDelta * -100).toFixed(0)}% at equal or better correctness`
+        : `exploration fell ${(explorationDelta * -100).toFixed(0)}%, but neither arm resolved anything — ` +
+          `correctness is unmeasured, so this is not yet evidence the graph paid for itself`,
       explorationDelta,
       correctnessDelta,
     };

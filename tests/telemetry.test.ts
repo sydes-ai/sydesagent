@@ -215,3 +215,35 @@ describe('A/B verdict', () => {
     expect(verdict(baseline, candidate).reason).toContain('did not pay for itself');
   });
 });
+
+
+/**
+ * Zero resolved in both arms is the absence of a correctness signal, not parity.
+ *
+ * The verdict printed "exploration fell N% at equal or better correctness" for three
+ * consecutive A/B runs in which nothing had been scored at all — and once for a run whose two
+ * arms were the same cached harness report read twice. A flattering sentence that survives
+ * having no data behind it is worse than no sentence.
+ */
+describe('verdict honesty', () => {
+  const arm = (label: string, resolved: number, modelCalls: number) => ({
+    label,
+    runs: 10,
+    resolved,
+    resolveRate: resolved / 10,
+    totals: {},
+    means: { modelCalls, toolCalls: modelCalls, uniqueFilesInspected: 8, totalTokens: 1000 },
+  }) as never;
+
+  it('refuses to claim parity when neither arm resolved anything', () => {
+    const v = verdict(arm('base', 0, 100), arm('graph', 0, 50));
+    expect(v.reason).toContain('correctness is unmeasured');
+    expect(v.helped).toBe(false);
+  });
+
+  it('claims it when there is a correctness number to stand on', () => {
+    const v = verdict(arm('base', 2, 100), arm('graph', 2, 50));
+    expect(v.reason).toContain('equal or better correctness');
+    expect(v.helped).toBe(true);
+  });
+});
